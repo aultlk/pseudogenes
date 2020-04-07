@@ -9,7 +9,7 @@ import pandas as pd
 from loader import parse_bedtools_output 
 from loader import parse_sonar_output
 from loader import parse_pseudogene_list
-from loader import transform_table_into_cool_info 
+from loader import transform_all_data 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SONAR_OUTPUT_FILE = Path(f"{ROOT_DIR}/filtering2_rearrangements_single-cell.tsv")
@@ -26,17 +26,15 @@ def group_bedtools_output():
     sonar_info = parse_sonar_output(SONAR_OUTPUT_FILE)
     pseudogene_info = parse_pseudogene_list(PSEUDOGENE_FILE)
 
-    for sc_path in Path(f"{ROOT_DIR}/mapped_IG").glob("**/bedtoolsOutput.csv"):
+    for i, sc_path in enumerate(Path(f"{ROOT_DIR}/mapped_IG").glob("**/bedtoolsOutput.csv")):
         sc_id = [x.name for x in sc_path.parents][:4]
-        print(sc_id, sc_path)
+        # print(sc_id, sc_path)
 
         sc_info = parse_bedtools_output(sc_path) # continue loop to next function
+
         # sc_info.append(sc_id)
-        transformed_info = transform_table_into_cool_info(sc_id, sc_info, sonar_info, pseudogene_info)
-        all_sc_info.append(sc_info)
-
-    import ipdb; ipdb.set_trace()
-
+        transformed_info = transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info)
+        # all_sc_info.append(sc_info)
 
 # Next, we will add section that checks if gene is in pseudogene database. 
 # Then add ipdb so we can check it if it is still not found. 
