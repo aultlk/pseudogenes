@@ -13,4 +13,4 @@
 #$ -l mem_free=10G,h_vmem=12G
 
 module load Python/3.7.3-foss-2016b
-python /nethome/aultlk/Projects/Pseudogenes/pseudogenes/bedtoolsLoopJointSampleSheet.py
+python /nethome/aultlk/Projects/Pseudogenes/pseudogenes/bedtools_mapIGs.py
