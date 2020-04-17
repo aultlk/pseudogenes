@@ -1,5 +1,7 @@
-# This script retreives single cell data, filters dropped cells, and extracts mapped
-# immunoglobulin genes and read counts using the bedtools multicov function.   
+"""
+This script retreives single cell data, filters dropped cells, and extracts mapped
+immunoglobulin genes and read counts using the bedtools multicov function.   
+"""
 
 from pathlib import Path
 
@@ -35,6 +37,7 @@ for (project, flow_cell, lane, index, cell_id) in sample_df.to_numpy():
                     'data', 
                     flow_cell,
                     lane,
+                    index,
                     'STAR', 
                     'recalibrated.bam')
 
