@@ -35,7 +35,14 @@ def group_bedtools_output():
 
     bedtools_files = list(Path(f"{ROOT_DIR}/bedtools_mappedIG").glob("**/*.bed"))
     n_cells = len(bedtools_files)
-
+    
+    # troubleshoot: make header for cells w/o sonar gene hits
+    with open('../cells_not_in_sonar.csv', 'w') as handle:
+        handle.write('cell_id\n')            
+    
+    with open('../cells_in_sonar_wo_gene-hits.csv', 'w') as handle:
+        handle.write('cell_id\tsonar_V_call\tbedtools_mapped_IGs\n')        
+        
     for (i, sc_path) in enumerate(bedtools_files):
 
         # For now, simple progress, real progressbar later
@@ -43,7 +50,6 @@ def group_bedtools_output():
             print("{:,}/{:,}".format(i, n_cells), end='\r')
 
         sc_id = sc_path.parent.name
-        flowcell_id = sc_path.stem
 
         # only collect bedtools output on cells not in cells to filter list
         if sc_id not in cells_to_drop:

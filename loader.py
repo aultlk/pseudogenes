@@ -8,8 +8,6 @@ import sys
 
 import pandas as pd
 
-
-
 def parse_bedtools_output(path, gene_loci="all_IGV"):
     """
     path: Path to bedtools output
@@ -40,7 +38,6 @@ def parse_bedtools_output(path, gene_loci="all_IGV"):
 
     else:
         sys.exit(f'Unknown gene loci: {gene_loci}')
-
     # take gene loci where condition == True 
     mapped_IGs = mapped_IGs.loc[condition]
 
@@ -57,9 +54,12 @@ def parse_sonar_output(sonar_output_file):
                      usecols=['cell_id', 'source_id', 'v_call', 'duplicate_count', 
                               'v_identity', 'productive', 'status'])
 
+    # remove the byte order mark in cell_id column ??
+    db.cell_id = db.cell_id.str.replace('\ufeff', '')
+
     # only use rows that have a "good" status
-    sonar_good = db.loc[:, 'status'] == 'good'
-    db = db.loc[sonar_good]
+    # sonar_good = db.loc[:, 'status'] == 'good'
+    # db = db.loc[sonar_good]
 
     db.v_call = db.v_call.str.split(',')
     db = db.explode('v_call')
@@ -76,7 +76,7 @@ def parse_pseudogene_list(filename):
 def parse_dropped_cells(*files):
     all_dropped_cells = set()
     for f in files:
-        dropped_cells = set(open(f).read().strip().split('\n'))
+        dropped_cells = {line.strip() for line in open(f)}
         all_dropped_cells |= dropped_cells
 
     return all_dropped_cells
@@ -94,36 +94,37 @@ def transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info):
     # Subset the genes that are detected on the bed output
     ok_genes = set(sc_info['gene_name']).intersection(sonar_info['gene'])
 
+    if sonar_info.size == 0:
+        with open('../cells_not_in_sonar.csv', 'a') as handle:
+            handle.write('{}\n'.format(sc_id))
+        return 
+
     if not ok_genes:
-        import ipdb; ipdb.set_trace()
-
-
+        with open('../cells_in_sonar_wo_gene-hits.csv', 'a') as handle:
+            gene_names_bedtools = ','.join(sc_info['gene_name'].tolist())
+            gene_names_sonar = ','.join(sonar_info['gene'].tolist())
+            handle.write('{}\t{}\t{}\n'.format(sc_id, gene_names_sonar, gene_names_bedtools))
+        return
+    
+    # Set the gene name as index, intersect gene data from sonar, and fill in NaN values for
+    # cell_id and source_id for the given single cell
+    sonar_info = (sonar_info
+                  .set_index('gene')
+                  .reindex(index=sc_info.gene_name)
+                  .fillna(value={'cell_id': sc_id, 'source_id': sonar_info.source_id.iloc[0]}))
     # Get pseudogenes
-    pseudogenes = set(sc_info['gene_name']).intersection(pseudogene_info)
+    sonar_info['pseudogene'] = [x in pseudogene_info for x in sonar_info.index]
+                          
+    # Get bedtools read counts for genes
+    sonar_info['bedtools_read_count'] = sc_info.set_index('gene_name').loc[:, 'read_count']
 
-    # Check if some genes are absent
-    absent_genes = (set(sc_info['gene_name'])
-                    .difference(sonar_info['gene'])
-                    .difference(pseudogene_info))
-    if absent_genes:
-        with open('../absent_genes.csv', 'a') as handle:
-            for gene in absent_genes:
-                handle.write('{},{}\n'.format(sc_id, gene))
+    
 
-    # Set the gene name as index
-    sonar_info.set_index('gene', inplace=True)
-
-    if ok_genes:
-        sonar_for_bedtools = sonar_info.loc[
-            list(ok_genes),
-            ["duplicate_count", "SHM"]]
+    
+    
+    import ipdb; ipdb.set_trace()
         
-        # Merge datasets on "gene_name" colum for sc_info and on index for sonar_for_bedtools
-        merged_data = sc_info.merge(sonar_for_bedtools, 
-                                    left_on='gene_name', 
-                                    right_index=True)
+    return sonar_info
 
-        merged_data['sc_id'] = sc_id
-        
-        return merged_data
+    
 
