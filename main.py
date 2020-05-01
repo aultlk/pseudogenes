@@ -28,7 +28,7 @@ def group_bedtools_output():
     - calls parse_bedtools_output() to extract relevant single cell data 
     -
     '''
-    all_sc_info = []
+    all_sc_info = {}
     sonar_info = parse_sonar_output(SONAR_OUTPUT_FILE)
     pseudogene_info = parse_pseudogene_list(PSEUDOGENE_FILE)
     cells_to_drop = parse_dropped_cells(CELLS_TO_REMOVE_FILE, IGH_IGNORE_FILE, IGKL_IGNORE_FILE)
@@ -57,9 +57,12 @@ def group_bedtools_output():
             transformed_info = transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info)
 
             if transformed_info is not None:
-                all_sc_info.append(transformed_info)
+                all_sc_info[sc_id] = transformed_info
 
-
+    all_sc_info = pd.DataFrame(all_sc_info).T
+    all_sc_info.columns = [all_sc_info.columns.get_level_values(0) + '_' + all_sc_info.columns.get_level_values(1),
+                           all_sc_info.columns.get_level_values(2)]
+    import ipdb; ipdb.set_trace()
 # Next step: is the single cell ID in the meta file? 
 
 # Next, we will add section that checks if gene is in pseudogene database. 

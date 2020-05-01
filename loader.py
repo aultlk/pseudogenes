@@ -18,7 +18,7 @@ def parse_bedtools_output(path, gene_loci="all_IGV"):
              that were removed for various reasons
     """
     mapped_IGs = pd.read_csv(path, sep='\t', header=None, usecols=[3, 5])
-
+    
     # extract gene name and read counts
     mapped_IGs.columns = ['gene_name', 'read_count']
     # filter out read_counts < 0
@@ -58,8 +58,8 @@ def parse_sonar_output(sonar_output_file):
     db.cell_id = db.cell_id.str.replace('\ufeff', '')
 
     # only use rows that have a "good" status
-    # sonar_good = db.loc[:, 'status'] == 'good'
-    # db = db.loc[sonar_good]
+    sonar_good = db.loc[:, 'status'] == 'good'
+    db = db.loc[sonar_good]
 
     db.v_call = db.v_call.str.split(',')
     db = db.explode('v_call')
@@ -106,25 +106,43 @@ def transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info):
             handle.write('{}\t{}\t{}\n'.format(sc_id, gene_names_sonar, gene_names_bedtools))
         return
     
-    # Set the gene name as index, intersect gene data from sonar, and fill in NaN values for
+    # Set gene name as index, intersect gene data from sonar, and fill in NaN values for
     # cell_id and source_id for the given single cell
     sonar_info = (sonar_info
                   .set_index('gene')
                   .reindex(index=sc_info.gene_name)
                   .fillna(value={'cell_id': sc_id, 'source_id': sonar_info.source_id.iloc[0]}))
-    # Get pseudogenes
-    sonar_info['pseudogene'] = [x in pseudogene_info for x in sonar_info.index]
-                          
+
+    # Create 'rearrangement' column and assign each gene (x) as productive, passenger, or pseudogene
+    sonar_info['rearrangement'] = ['pseudogene' if gene in pseudogene_info
+                                   else 'productive' if sonar_info.loc[gene, 'productive']=='T'
+                                   else 'total_nonproductive' for gene in sonar_info.index]
+
     # Get bedtools read counts for genes
     sonar_info['bedtools_read_count'] = sc_info.set_index('gene_name').loc[:, 'read_count']
 
-    
+    # Group all loci (V), only heavy (VH), and only light (VL) by rearrangement  
+##### Ask Chaim about 2 VH genes, should I still sum and take average??#####
+    grouped_VH = (sonar_info
+                  .loc[sonar_info.index.str.contains('IGH'), :] 
+                  .groupby('rearrangement')
+                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
 
+    grouped_VL = (sonar_info
+                  .loc[sonar_info.index.str.match('^IG[KL]V'), :]
+                  .groupby('rearrangement')
+                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
     
+    grouped_V = (sonar_info
+                 .groupby('rearrangement')
+                 .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
     
-    import ipdb; ipdb.set_trace()
-        
-    return sonar_info
+    # Merged all grouped V data sets
+    merged_data = pd.concat({'V': grouped_V.stack(),
+                             'VL': grouped_VL.stack(),
+                             'VH': grouped_VH.stack()})
+
+    return merged_data
 
     
 
