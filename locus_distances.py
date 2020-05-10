@@ -9,6 +9,7 @@ import pandas as pd
 from sklearn.metrics import pairwise_distances
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.ticker as tkr
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -43,6 +44,9 @@ single_cell_data = (single_cell_data.drop(columns=['bedtools_read_count', 'dupli
 cells_w_nan = single_cell_data[single_cell_data.isnull().any(axis=1)].index
 single_cell_data = single_cell_data.drop(index=cells_w_nan)
 
+
+
+
 # Create columns for extracted distances 
 single_cell_data.reindex(list(single_cell_data)+
                         [('avg_distance', 'VH_passenger'), ('avg_distance', 'VH_pseudogene'),
@@ -73,18 +77,30 @@ single_cell_data.columns = pd.MultiIndex.from_tuples([[lvl1] + lvl2.split('_') f
 single_cell_data.columns.names=['variable', 'locus', 'rearrangement']
 df1 = single_cell_data['SHM'].reset_index().melt(id_vars='cell_id', value_name='SHM')
 df2 = single_cell_data['avg_distance'].reset_index().melt(id_vars='cell_id', value_name='avg_distance')
-single_cell_data = df1.drop(columns='rearrangement').merge(df2, on=['cell_id', 'locus'])
+reformatted_data = df1.drop(columns='rearrangement').merge(df2, on=['cell_id', 'locus'])
 
-# Plot average locus distance to functional (VH/VL passenger/pseudogene) versus functional SHM % 
-sns.set()
-# g = sns.FacetGrid(col='locus', hue='rearrangement', data=single_cell_data, sharey=False)
-# g.map(sns.jointplot, 'avg_distance', 'SHM')#, scatter_kws={'s': 3, 'alpha': 0.5})
-# g.add_legend()
-# g = sns.lmplot(x='avg_distance', y='SHM', hue='rearrangement', data=single_cell_data)
-# g.set_axis_labels("average locus distance", "average functional SHM%")
-# sns.jointplot('avg_distance', 'SHM', data=single_cell_data[(single_cell_data.rearrangement == 'passenger') & (single_cell_data.locus == 'VH')], kind='kde')
+
+# Plot average locus distance of nonproductive rearrangement (passenger/pseudogene) to functional versus functional SHM % 
+#### change grid background and color selection of kdeplots for rearrangement type
+passenger_VH = reformatted_data.query("rearrangement == 'passenger' and locus == 'VH'")
+pseudogene_VH = reformatted_data.query("rearrangement == 'pseudogene' and locus == 'VH'")
+passenger_VL = reformatted_data.query("rearrangement == 'passenger' and locus == 'VL'")
+pseudogene_VL = reformatted_data.query("rearrangement == 'pseudogene' and locus == 'VL'")
+
+sns.set(style="whitegrid")
+g = sns.FacetGrid(data=reformatted_data, col='rearrangement', row='locus', hue='locus')
+g.map(sns.kdeplot, 'avg_distance', 'SHM', shade_lowest=False, shade=True)
+g.map(sns.scatterplot, 'avg_distance', 'SHM', alpha=0.4, edgecolor=None, s=1, color='black')
+g.set(xlim=(0, 8e5), ylim=(0, 20), xlabel='Average Interlocus Distance (bp)', ylabel='Average SHM (%)')
+g.set_titles(template='{col_name}: {row_name}', fontweight='bold')
+
+for ax in g.axes[0]:
+    ax.xaxis.set_major_formatter(
+        tkr.FuncFormatter(lambda x, p: "{:,}k".format(int(x/1000))))
+plt.subplots_adjust(hspace = 0.4, wspace = 0.1)
 
 plt.show()
+
 
 
 
