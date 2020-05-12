@@ -103,9 +103,9 @@ def prod_nonprod_mannwhitneyu(loci="all_case"):
 prod_nonprod_mannwhitneyu()
 
 # Plot number of reads per rearrangement type at loci
-ax = sns.boxplot(x="locus", y="bedtools_read_count", hue='rearrangement', data=rearrangement_counts)
-ax = sns.stripplot(x="locus", y="bedtools_read_count", hue = 'rearrangement', s=1, dodge=True, data=rearrangement_counts)
-
+ax = sns.swarmplot(x="locus", y="bedtools_read_count", data=rearrangement_counts, color=".25")
+ax = sns.boxplot(x="locus", y="bedtools_read_count", hue='rearrangement', palette="Set3", data=rearrangement_counts, fliersize=3)
+#ax = sns.stripplot(x="locus", y="bedtools_read_count", hue = 'rearrangement', s=1, dodge=True, data=rearrangement_counts)
 plt.show()
 
 
