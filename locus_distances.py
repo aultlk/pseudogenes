@@ -4,14 +4,20 @@ rearranged genes (passenger/pseudogene) for a given single cell. Correlations ar
 chromosomal distance between productive/nonproductively rearranged genes and average SHM on functional rearrangement.
 """
 
+
 from pathlib import Path
 import pandas as pd
 from sklearn.metrics import pairwise_distances
+from itertools import product
+import numpy as np
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as tkr
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
 
 # Load IG mapped genes bed file and calculate 'center' of position 1 and 2 for each gene
 IG_distances = pd.read_csv(f'{ROOT_DIR}/genes.sorted.bed', sep='\t', header=None, usecols=[0, 1, 2, 3],
@@ -27,70 +33,82 @@ for chromosome in ['chr2', 'chr14', 'chr22']:
     gene_names = IG_distances.loc[IG_distances.chromosome == chromosome, 'gene']
     other_genes = IG_distances.loc[IG_distances.chromosome != chromosome, 'gene']
     paired_distances_df.loc[gene_names, other_genes] = float('nan')
+
     
-# Retrieve single cell rearrangements (functional/pseudogene/passenger) and functional gene SHM percentage
+
+# Retrieve single cell data and reformat DataFrame to distinguish IGH, IGL, IGK loci (heavy, lambda, kappa)
 single_cell_data = (pd.read_csv(f'{ROOT_DIR}/final_merged_raw_reads.csv', header=[0,1], index_col=[0]).swaplevel(0, 1, axis=1)
                     .rename_axis(index='cell_id'))
 
-# Reformat string of gene names to list of gene names, drop columns not needed
 single_cell_data.loc[:,'gene_name'] = single_cell_data.loc[:,'gene_name'].fillna('float("nan")').applymap(eval).values
 single_cell_data = (single_cell_data.drop(columns=['bedtools_read_count', 'duplicate_count', 'gene_count'])
-                    .swaplevel(0, 1, axis=1)
-                    .drop(columns=['VHL_functional', 'VHL_passenger', 'VHL_pseudogene'])
-                    .drop(columns=('VL_pseudogene', 'SHM'))
-                    .swaplevel(0, 1, axis=1))
+                    .swaplevel(0, 1, axis=1).drop(columns=['VHL_functional', 'VHL_passenger', 'VHL_pseudogene'])
+                    .drop(columns=('VL_pseudogene', 'SHM')))
 
-# Filter cells with any NaN values
-cells_w_nan = single_cell_data[single_cell_data.isnull().any(axis=1)].index
-single_cell_data = single_cell_data.drop(index=cells_w_nan)
+single_cell_data.columns = pd.MultiIndex.from_tuples([x.split('_')+[y] for (x,y) in single_cell_data.columns])
+single_cell_data = single_cell_data.stack(level=[0, 1]).explode('gene_name')
+single_cell_data.index.names = ['cell_id', 'chain', 'rearrangement']
+single_cell_data['locus'] = single_cell_data.gene_name.map(lambda x: x[:3])
+single_cell_data = single_cell_data.reset_index().set_index(['cell_id', 'locus', 'rearrangement'])
+
+single_cell_data = single_cell_data.dropna(subset=['gene_name'], how='any')
 
 
+# Retrieve gene distances and calculate average
+def compute_distance(data):
+    """
+    data = Subsetted locus genes for each individual cell
+       
+    Returns = DataFrame with average pseudogene/passenger distance to functional gene
+              for a given locus and single cell
+    """
 
+    data = data.groupby(level=0).gene_name.agg(list)
 
-# Create columns for extracted distances 
-single_cell_data.reindex(list(single_cell_data)+
-                        [('avg_distance', 'VH_passenger'), ('avg_distance', 'VH_pseudogene'),
-                         ('avg_distance', 'VL_passenger'), ('avg_distance', 'VL_pseudogene')], axis=1)
-
-for cell in single_cell_data.index:
-    VH_functional_genes = single_cell_data.loc[cell, ('gene_name', 'VH_functional')]
-    VH_passenger_genes = single_cell_data.loc[cell, ('gene_name', 'VH_passenger')]
-    VH_pseudogenes = single_cell_data.loc[cell, ('gene_name', 'VH_pseudogene')]
-    VL_functional_genes = single_cell_data.loc[cell, ('gene_name', 'VL_functional')]
-    VL_passenger_genes = single_cell_data.loc[cell, ('gene_name', 'VL_passenger')]
-    VL_pseudogenes = single_cell_data.loc[cell, ('gene_name', 'VL_pseudogene')]
+    result = {}
     
-    avg_distance = paired_distances_df.loc[VH_functional_genes, VH_passenger_genes].mean(axis=1)
-    single_cell_data.loc[cell, ('avg_distance', 'VH_passenger')] = avg_distance.iloc[0].round(1)
+    if any(data.index == 'functional') & any(data.index == 'passenger'):
+        gene1 = data.functional    
+        gene2 = data.passenger
+        
+        passenger_distance = [paired_distances_df.loc[x, y] for (x, y) in product(gene1, gene2)]
+        passenger_distance = np.mean(passenger_distance)
 
-    avg_distance = paired_distances_df.loc[VH_functional_genes, VH_pseudogenes].mean(axis=1)
-    single_cell_data.loc[cell, ('avg_distance', 'VH_pseudogene')] = avg_distance.iloc[0].round(1)
+        result['passenger'] = passenger_distance
 
-    avg_distance = paired_distances_df.loc[VL_functional_genes, VL_passenger_genes].mean(axis=1)
-    single_cell_data.loc[cell, ('avg_distance', 'VL_passenger')] = avg_distance.iloc[0].round(1)
-   
-    avg_distance = paired_distances_df.loc[VL_functional_genes, VL_pseudogenes].mean(axis=1)
-    single_cell_data.loc[cell, ('avg_distance', 'VL_pseudogene')] = avg_distance.iloc[0].round(1)
-   
-# Reshape single cell data for plotting
-single_cell_data.columns = pd.MultiIndex.from_tuples([[lvl1] + lvl2.split('_') for (lvl1, lvl2) in single_cell_data.columns])
-single_cell_data.columns.names=['variable', 'locus', 'rearrangement']
-df1 = single_cell_data['SHM'].reset_index().melt(id_vars='cell_id', value_name='SHM')
-df2 = single_cell_data['avg_distance'].reset_index().melt(id_vars='cell_id', value_name='avg_distance')
-reformatted_data = df1.drop(columns='rearrangement').merge(df2, on=['cell_id', 'locus'])
+    if any(data.index == 'functional') & any(data.index == 'pseudogene'):
+        gene1 = data.functional
+        gene3 = data.pseudogene
+
+        pseudogene_distance = [paired_distances_df.loc[x, y] for (x, y) in product(gene1, gene3)]
+        pseudogene_distance = np.mean(pseudogene_distance)
+
+        result['pseudogene'] = pseudogene_distance
+
+    return result
 
 
-# Plot average locus distance of nonproductive rearrangement (passenger/pseudogene) to functional versus functional SHM % 
-#### change grid background and color selection of kdeplots for rearrangement type
-passenger_VH = reformatted_data.query("rearrangement == 'passenger' and locus == 'VH'")
-pseudogene_VH = reformatted_data.query("rearrangement == 'pseudogene' and locus == 'VH'")
-passenger_VL = reformatted_data.query("rearrangement == 'passenger' and locus == 'VL'")
-pseudogene_VL = reformatted_data.query("rearrangement == 'pseudogene' and locus == 'VL'")
+result = {}
+for i, (cell_id, locus) in enumerate(single_cell_data.reset_index()[['cell_id', 'locus']].values):
+    print("{:,}/{:,}".format(i, len(single_cell_data)), end='\r') # loader bar
+    if single_cell_data.loc[(cell_id, locus)].size > 0:
+        result[(cell_id, locus)] = compute_distance(single_cell_data.loc[(cell_id, locus)])
+
+result_df = pd.DataFrame(result)
+
+
+# Map to distances to functional SHM for plotting
+result_df = result_df.T
+result_df.index.names = ['cell_id', 'locus']
+
+SHM_data = single_cell_data.xs('functional', level='rearrangement').SHM
+result_df = result_df.merge(SHM_data, left_index=True, right_index=True)
+result_df = result_df.reset_index().melt(id_vars=['cell_id', 'locus', 'SHM'], var_name='rearrangement', value_name='distance')
 
 sns.set(style="whitegrid")
-g = sns.FacetGrid(data=reformatted_data, col='rearrangement', row='locus', hue='locus')
-g.map(sns.kdeplot, 'avg_distance', 'SHM', shade_lowest=False, shade=True)
-g.map(sns.scatterplot, 'avg_distance', 'SHM', alpha=0.4, edgecolor=None, s=1, color='black')
+g = sns.FacetGrid(data=result_df, col='rearrangement', row='locus', hue='locus')
+g.map(sns.kdeplot, 'distance', 'SHM', shade_lowest=False, shade=True)
+g.map(sns.scatterplot, 'distance', 'SHM', alpha=0.4, edgecolor=None, s=1, color='black')
 g.set(xlim=(0, 8e5), ylim=(0, 20), xlabel='Average Interlocus Distance (bp)', ylabel='Average SHM (%)')
 g.set_titles(template='{col_name}: {row_name}', fontweight='bold')
 
