@@ -9,6 +9,7 @@ from scipy.stats import mannwhitneyu
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # Load all single cell data for analysis control checks
@@ -36,77 +37,102 @@ rearrangement_counts.columns = pd.MultiIndex.from_tuples(
     [col.split('_') for col in rearrangement_counts.columns])
 
 rearrangement_counts = rearrangement_counts.reset_index().melt(id_vars='cell_id', var_name=['locus', 'rearrangement'], value_name='bedtools_read_count')
+rearrangement_counts = rearrangement_counts.set_index('cell_id')
 
-collective_sums = (mapped_rearrangements.loc[:, 'bedtools_read_count'].sum().map(lambda x: '{:,}'.format(x)))
-print(f'Collective sums: \n{collective_sums}')
+# Bin each rearrangement as productive or nonproductive
+rearrangement_counts['bin'] = (rearrangement_counts.rearrangement
+                               .replace({'functional': 'productive', 'passenger': 'nonproductive', 'pseudogene': 'nonproductive'}))
+
+# Plot number of reads per rearrangement type at loci
+g1 = sns.boxplot(x="locus", y="bedtools_read_count", hue='rearrangement', data=rearrangement_counts, fliersize=1)
+g1 = sns.stripplot(x="locus", y="bedtools_read_count", hue='rearrangement', s=2, dodge=True, data=rearrangement_counts)
+
+plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+g1.set_yscale("log")
+g1.set(ylabel="Mapped Raw Read Counts (log10)")
+g1.set(xlabel="Locus")
+
+plt.show()
+
+g2 = sns.violinplot(x="locus", y="bedtools_read_count", hue="bin", data=rearrangement_counts, palette="Set2", split=True, scale="count")
+g2.set(ylabel="Mapped Raw Read Counts")
+g2.set(xlabel="Locus")
+
+plt.show()
+
+#collective_sums = (mapped_rearrangements.loc[:, 'bedtools_read_count'].sum().map(lambda x: '{:,}'.format(x)))
+#print(f'Collective sums: \n{collective_sums}')
 
 
 # Calculate p values to compare nonproductive versus productive groups at VHL loci, and individual VH and VL locus
-def prod_nonprod_mannwhitneyu(loci="all_case"):
-   """
-   loci: By default, compares nonproductive and productive reads across cells for all three cases (all_case) - VH only, VL only, and VHL
-   Returns: Mann Whitney U p-value and corresponding case (loci) 
-   """
+# def prod_nonprod_mannwhitneyu(loci="all_case"):
+#    """
+#    loci: By default, compares nonproductive and productive reads across cells for all three cases (all_case) - VH only, VL only, and VHL
+#    Returns: Mann Whitney U p-value and corresponding case (loci) 
+#    """
 
-   functional_reads = (rearrangement_counts['rearrangement'] == 'functional')
-   passenger_reads = (rearrangement_counts['rearrangement'] == 'passenger')
-   pseudogene_reads = (rearrangement_counts['rearrangement'] == 'pseudogene')
-   VH_loci = (rearrangement_counts['locus'] == 'VH')
-   VL_loci = (rearrangement_counts['locus'] == 'VL')
-   VHL_loci = (rearrangement_counts['locus'] == 'VHL')
+#    functional_reads = (rearrangement_counts['rearrangement'] == 'functional')
+#    passenger_reads = (rearrangement_counts['rearrangement'] == 'passenger')
+#    pseudogene_reads = (rearrangement_counts['rearrangement'] == 'pseudogene')
+#    VH_loci = (rearrangement_counts['locus'] == 'VH')
+#    VL_loci = (rearrangement_counts['locus'] == 'VL')
+#    VHL_loci = (rearrangement_counts['locus'] == 'VHL')
    
-   # VH loci: passenger reads
-   VH_p_value1 = mannwhitneyu(
-      x=rearrangement_counts.loc
-      [functional_reads & VH_loci]['bedtools_read_count'],
-      y=rearrangement_counts.loc[passenger_reads & VH_loci]['bedtools_read_count'])
+#    # VH loci: passenger reads
+#    VH_p_value1 = mannwhitneyu(
+#       x=rearrangement_counts.loc
+#       [functional_reads & VH_loci]['bedtools_read_count'],
+#       y=rearrangement_counts.loc[passenger_reads & VH_loci]['bedtools_read_count'])
 
-   # VH loci: pseudogene reads
-   VH_p_value2 = mannwhitneyu(
-      x=rearrangement_counts.loc
-      [functional_reads & VH_loci]['bedtools_read_count'],
-      y=rearrangement_counts.loc[pseudogene_reads & VH_loci]['bedtools_read_count'])
+#    # VH loci: pseudogene reads
+#    VH_p_value2 = mannwhitneyu(
+#       x=rearrangement_counts.loc
+#       [functional_reads & VH_loci]['bedtools_read_count'],
+#       y=rearrangement_counts.loc[pseudogene_reads & VH_loci]['bedtools_read_count'])
 
-   # VL loci: passenger reads
-   VL_p_value1 = mannwhitneyu(x=rearrangement_counts.loc
-                [functional_reads & VL_loci]['bedtools_read_count'],
-                y=rearrangement_counts.loc
-                [passenger_reads & VL_loci]['bedtools_read_count'])
+#    # VL loci: passenger reads
+#    VL_p_value1 = mannwhitneyu(x=rearrangement_counts.loc
+#                 [functional_reads & VL_loci]['bedtools_read_count'],
+#                 y=rearrangement_counts.loc
+#                 [passenger_reads & VL_loci]['bedtools_read_count'])
 
-   # VL loci: pseudogene reads
-   VL_p_value2 = mannwhitneyu(x=rearrangement_counts.loc
-                [functional_reads & VL_loci]['bedtools_read_count'],
-                y=rearrangement_counts.loc
-                [pseudogene_reads & VL_loci]['bedtools_read_count'])
+#    # VL loci: pseudogene reads
+#    VL_p_value2 = mannwhitneyu(x=rearrangement_counts.loc
+#                 [functional_reads & VL_loci]['bedtools_read_count'],
+#                 y=rearrangement_counts.loc
+#                 [pseudogene_reads & VL_loci]['bedtools_read_count'])
 
    
-   # VHL loci: passenger reads
-   VHL_p_value1 = mannwhitneyu(x=rearrangement_counts.loc
-                [functional_reads & VHL_loci]['bedtools_read_count'],
-                y=rearrangement_counts.loc
-                [passenger_reads & VHL_loci]['bedtools_read_count'])
+#    # VHL loci: passenger reads
+#    VHL_p_value1 = mannwhitneyu(x=rearrangement_counts.loc
+#                 [functional_reads & VHL_loci]['bedtools_read_count'],
+#                 y=rearrangement_counts.loc
+#                 [passenger_reads & VHL_loci]['bedtools_read_count'])
 
-   # VHL loci: pseudogene reads
-   VHL_p_value2 = mannwhitneyu(x=rearrangement_counts.loc
-                [functional_reads & VHL_loci]['bedtools_read_count'],
-                y=rearrangement_counts.loc
-                [pseudogene_reads & VHL_loci]['bedtools_read_count'])
+#    # VHL loci: pseudogene reads
+#    VHL_p_value2 = mannwhitneyu(x=rearrangement_counts.loc
+#                 [functional_reads & VHL_loci]['bedtools_read_count'],
+#                 y=rearrangement_counts.loc
+#                 [pseudogene_reads & VHL_loci]['bedtools_read_count'])
 
-   stats_display = "Mann Whitney U Test Results:"
-   VH_stats = f"\nVH locus: \n\t Passenger: {VH_p_value1} \n\t Pseudogene: {VH_p_value2}"
-   VL_stats = f"\nVL locus: \n\t Passenger: {VL_p_value1} \n\t Pseudogene: {VL_p_value2}"
-   VHL_stats = f"\nVHL locus: \n\t Passenger: {VHL_p_value1} \n\t Pseudogene: {VHL_p_value2}"
+#    stats_display = "Mann Whitney U Test Results:"
+#    VH_stats = f"\nVH locus: \n\t Passenger: {VH_p_value1} \n\t Pseudogene: {VH_p_value2}"
+#    VL_stats = f"\nVL locus: \n\t Passenger: {VL_p_value1} \n\t Pseudogene: {VL_p_value2}"
+#    VHL_stats = f"\nVHL locus: \n\t Passenger: {VHL_p_value1} \n\t Pseudogene: {VHL_p_value2}"
    
-   return [print(f"{stats_display} \n\t{VH_stats} \n\t{VL_stats} \n\t{VHL_stats}")]
+#    return [print(f"{stats_display} \n\t{VH_stats} \n\t{VL_stats} \n\t{VHL_stats}")]
    
 
-prod_nonprod_mannwhitneyu()
+#prod_nonprod_mannwhitneyu()
 
 # Plot number of reads per rearrangement type at loci
 ax = sns.swarmplot(x="locus", y="bedtools_read_count", data=rearrangement_counts, color=".25")
 ax = sns.boxplot(x="locus", y="bedtools_read_count", hue='rearrangement', palette="Set3", data=rearrangement_counts, fliersize=3)
 #ax = sns.stripplot(x="locus", y="bedtools_read_count", hue = 'rearrangement', s=1, dodge=True, data=rearrangement_counts)
 plt.show()
+
+
+
 
 
 
