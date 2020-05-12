@@ -5,6 +5,7 @@ data from SONAR output file for single cells
 
 from pathlib import Path
 import sys
+from collections import Counter
 
 import pandas as pd
 
@@ -113,34 +114,46 @@ def transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info):
                   .reindex(index=sc_info.gene_name)
                   .fillna(value={'cell_id': sc_id, 'source_id': sonar_info.source_id.iloc[0]}))
 
-    # Create 'rearrangement' column and assign each gene (x) as productive, passenger, or pseudogene
+    # Create 'rearrangement' and 'bin' columns
+    # Assign each gene rearrangement as functional, passenger, or pseudogene and bin as productive/nonproductive
     sonar_info['rearrangement'] = ['pseudogene' if gene in pseudogene_info
-                                   else 'productive' if sonar_info.loc[gene, 'productive']=='T'
-                                   else 'total_nonproductive' for gene in sonar_info.index]
+                                   else 'functional' if sonar_info.loc[gene, 'productive']=='T'
+                                   else 'passenger' for gene in sonar_info.index]
 
     # Get bedtools read counts for genes
     sonar_info['bedtools_read_count'] = sc_info.set_index('gene_name').loc[:, 'read_count']
 
-    # Group all loci (V), only heavy (VH), and only light (VL) by rearrangement  
-##### Ask Chaim about 2 VH genes, should I still sum and take average??#####
+    # Group all loci (VHL), heavy only (VH), and light only (VL) by rearrangement, report # of assigned genes and list of gene names
     grouped_VH = (sonar_info
                   .loc[sonar_info.index.str.contains('IGH'), :] 
+                  .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
+                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
+                  .rename(columns={'rearrangement': 'gene_count'}))
 
     grouped_VL = (sonar_info
                   .loc[sonar_info.index.str.match('^IG[KL]V'), :]
+                  .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
+                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
+                  .rename(columns={'rearrangement': 'gene_count'}))
     
-    grouped_V = (sonar_info
-                 .groupby('rearrangement')
-                 .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean'}))
-    
-    # Merged all grouped V data sets
-    merged_data = pd.concat({'V': grouped_V.stack(),
+    grouped_VHL = (sonar_info
+                  .reset_index()
+                  .groupby('rearrangement')
+                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
+                  .rename(columns={'rearrangement': 'gene_count'}))
+
+     # Merged all grouped V data sets
+    merged_data = pd.concat({'VHL': grouped_VHL.stack(),
                              'VL': grouped_VL.stack(),
                              'VH': grouped_VH.stack()})
+    
+    # Normalize reads for sequencing depth by dividing by "Per Million" (PM) scaling factor to return RPM 
+    PM_factor = merged_data.xs('bedtools_read_count', level=2).loc['VHL'].sum()/1e6
+    merged_data.loc[(slice(None), slice(None), 'bedtools_read_count')]/=PM_factor
+    merged_data.rename({'bedtools_read_count': 'bedtools_RPM'}, level=2)
+    
 
     return merged_data
 

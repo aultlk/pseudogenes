@@ -4,6 +4,8 @@ rearranged genes (passenger/pseudogene) for a given single cell. Correlations ar
 chromosomal distance between productive/nonproductively rearranged genes and average SHM on functional rearrangement.
 """
 
+### Need to separate lambda and kappa average distances because different chromosomes
+
 from pathlib import Path
 import pandas as pd
 from sklearn.metrics import pairwise_distances

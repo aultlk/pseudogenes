@@ -59,15 +59,17 @@ def group_bedtools_output():
             if transformed_info is not None:
                 all_sc_info[sc_id] = transformed_info
 
+    # Clean up all_sc_info dataframe
     all_sc_info = pd.DataFrame(all_sc_info).T
+    numeric_data = all_sc_info.select_dtypes(include=float)
+    all_sc_info.loc[:, numeric_data.columns] = numeric_data.round(1)
     all_sc_info.columns = [all_sc_info.columns.get_level_values(0) + '_' + all_sc_info.columns.get_level_values(1),
                            all_sc_info.columns.get_level_values(2)]
-    import ipdb; ipdb.set_trace()
-# Next step: is the single cell ID in the meta file? 
 
-# Next, we will add section that checks if gene is in pseudogene database. 
-# Then add ipdb so we can check it if it is still not found. 
-# Be careful about parenthesis in pseudogene list (e.g. II, III) 
+    all_sc_info.to_csv(f'{ROOT_DIR}/final_merged_raw_reads.csv')
+
+
+
 
 # allows script to run group_bedtools_output() function, always at the end 
 if __name__ == '__main__':
