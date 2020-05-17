@@ -1,7 +1,7 @@
 #!/bin/bash -e
 
 # Job Name
-#$ -N bedtoolsExtraction
+#$ -N locus_distance
 
 # Execute the script from the Current Working Directory
 #$ -cwd
@@ -13,4 +13,4 @@
 #$ -l mem_free=10G,h_vmem=12G
 
 module load Python/3.7.3-foss-2016b
-python /nethome/aultlk/Projects/Pseudogenes/pseudogenes/bedtools_mapIGs.py
+python /nethome/aultlk/Projects/Pseudogenes/pseudogenes/locus_distance.py

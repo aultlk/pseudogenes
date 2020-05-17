@@ -6,41 +6,34 @@ data from SONAR output file for single cells
 from pathlib import Path
 import sys
 from collections import Counter
+from itertools import product
 
 import pandas as pd
 
-def parse_bedtools_output(path, gene_loci="all_IGV"):
+
+idx = pd.IndexSlice
+
+
+def parse_bedtools_output(path):
     """
     path: Path to bedtools output
-    gene_loci: Subsets bedtools output with only heavy IGV ("IGHV_only"), light 
-               IGV ("IGLV_only"), or all loci ("all_IGV"); all loci is default
-    Returns: IG gene names and read counts > 0 for all single cells; additionally,
-             bins genes as productive/nonproductive and filters out single cells 
-             that were removed for various reasons
+
+    Returns: Collects Immunoglobulin gene names and read counts > 0 for a 
+             given single cell. Normalizes reads for sequencing depth by dividing
+             by per million scaling factor to return reads per million (RPM). 
     """
     mapped_IGs = pd.read_csv(path, sep='\t', header=None, usecols=[3, 5])
     
-    # extract gene name and read counts
+    # Extract gene name and read counts
     mapped_IGs.columns = ['gene_name', 'read_count']
-    # filter out read_counts < 0
+
+    # Filter out read_counts < 0
     mapped_IGs = mapped_IGs.loc[mapped_IGs.read_count > 0]
-
-    if gene_loci == "all_IGV":
-        # take V genes from all loci
-        condition = mapped_IGs.gene_name.str.match('^IG[HKL]V')
     
-    elif gene_loci == "IGHV_only":
-        # only take heavy V genes 
-        condition = mapped_IGs.gene_name.str.startswith('IGHV')
-
-    elif gene_loci == "IGLV_only":
-        # only take light chain V genes
-        condition = mapped_IGs.gene_name.str.match('^IG[KL]V')
-
-    else:
-        sys.exit(f'Unknown gene loci: {gene_loci}')
-    # take gene loci where condition == True 
-    mapped_IGs = mapped_IGs.loc[condition]
+    # Normalize reads
+    PM_factor = mapped_IGs.read_count.sum()/1e6
+    mapped_IGs.read_count/=PM_factor
+    mapped_IGs.rename({'read_count': 'RPM'}, axis=1, inplace=True)
 
     return mapped_IGs 
 
@@ -69,10 +62,12 @@ def parse_sonar_output(sonar_output_file):
     
     return db.drop('v_identity', axis=1)
 
+
 def parse_pseudogene_list(filename):
     pseudogene_list = open(filename).read().split('\n')
     
     return pseudogene_list
+
 
 def parse_dropped_cells(*files):
     all_dropped_cells = set()
@@ -82,80 +77,123 @@ def parse_dropped_cells(*files):
 
     return all_dropped_cells
 
-def transform_all_data(sc_id, sc_info, sonar_info, pseudogene_info):
+
+def transform_all_data(cell_id, mapped_IGs, sonar_info, pseudogene_info):
     """    
     Returns: Data table with Productive vs. others read count, total read count
     """
 
     # Remove allele info
     sonar_info['gene'] = sonar_info.index.str.replace('\*\d+', '')
-    # Extract sc_id only fron sonar info
-    sonar_info = sonar_info.loc[sonar_info.cell_id == sc_id]
+
+    # Extract cell_id only fron sonar info
+    sonar_info = sonar_info.loc[sonar_info.cell_id == cell_id]
 
     # Subset the genes that are detected on the bed output
-    ok_genes = set(sc_info['gene_name']).intersection(sonar_info['gene'])
+    ok_genes = set(mapped_IGs['gene_name']).intersection(sonar_info['gene'])
 
     if sonar_info.size == 0:
         with open('../cells_not_in_sonar.csv', 'a') as handle:
-            handle.write('{}\n'.format(sc_id))
+            handle.write('{}\n'.format(cell_id))
         return 
 
     if not ok_genes:
         with open('../cells_in_sonar_wo_gene-hits.csv', 'a') as handle:
-            gene_names_bedtools = ','.join(sc_info['gene_name'].tolist())
+            gene_names_bedtools = ','.join(mapped_IGs['gene_name'].tolist())
             gene_names_sonar = ','.join(sonar_info['gene'].tolist())
-            handle.write('{}\t{}\t{}\n'.format(sc_id, gene_names_sonar, gene_names_bedtools))
+            handle.write('{}\t{}\t{}\n'.format(cell_id, gene_names_sonar, gene_names_bedtools))
         return
     
-    # Set gene name as index, intersect gene data from sonar, and fill in NaN values for
-    # cell_id and source_id for the given single cell
+    # Map gene data from sonar with single cell ids 
     sonar_info = (sonar_info
                   .set_index('gene')
-                  .reindex(index=sc_info.gene_name)
-                  .fillna(value={'cell_id': sc_id, 'source_id': sonar_info.source_id.iloc[0]}))
+                  .reindex(index=mapped_IGs.gene_name)
+                  .fillna(value={'cell_id': cell_id, 'source_id': sonar_info.source_id.iloc[0]}))
 
-    # Create 'rearrangement' and 'bin' columns
-    # Assign each gene rearrangement as functional, passenger, or pseudogene and bin as productive/nonproductive
+    # Create 'rearrangement' 
     sonar_info['rearrangement'] = ['pseudogene' if gene in pseudogene_info
                                    else 'functional' if sonar_info.loc[gene, 'productive']=='T'
                                    else 'passenger' for gene in sonar_info.index]
 
     # Get bedtools read counts for genes
-    sonar_info['bedtools_read_count'] = sc_info.set_index('gene_name').loc[:, 'read_count']
+    sonar_info['bedtools_RPM'] = mapped_IGs.set_index('gene_name').loc[:, 'RPM']
 
-    # Group all loci (VHL), heavy only (VH), and light only (VL) by rearrangement, report # of assigned genes and list of gene names
+    # Group by rearrangement, report # of assigned genes and list of gene names
     grouped_VH = (sonar_info
                   .loc[sonar_info.index.str.contains('IGH'), :] 
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
+                  .agg({'bedtools_RPM': 'sum', 
+                        'duplicate_count': 'sum', 
+                        'SHM': 'mean', 
+                        'rearrangement': len, 
+                        'gene_name': list})
+                  .rename(columns={'rearrangement': 'gene_count'}))
+
+    grouped_VK = (sonar_info
+                  .loc[sonar_info.index.str.match('^IGKV'), :]
+                  .reset_index()
+                  .groupby('rearrangement')
+                  .agg({'bedtools_RPM': 'sum', 
+                        'duplicate_count': 'sum', 
+                        'SHM': 'mean', 
+                        'rearrangement': len, 
+                        'gene_name': list})
                   .rename(columns={'rearrangement': 'gene_count'}))
 
     grouped_VL = (sonar_info
-                  .loc[sonar_info.index.str.match('^IG[KL]V'), :]
+                  .loc[sonar_info.index.str.match('^IGLV'), :]
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
-                  .rename(columns={'rearrangement': 'gene_count'}))
-    
-    grouped_VHL = (sonar_info
-                  .reset_index()
-                  .groupby('rearrangement')
-                  .agg({'bedtools_read_count': 'sum', 'duplicate_count': 'sum', 'SHM': 'mean', 'rearrangement': len, 'gene_name': list})
+                  .agg({'bedtools_RPM': 'sum', 
+                        'duplicate_count': 'sum', 
+                        'SHM': 'mean', 
+                        'rearrangement': len, 
+                        'gene_name': list})
                   .rename(columns={'rearrangement': 'gene_count'}))
 
-     # Merged all grouped V data sets
-    merged_data = pd.concat({'VHL': grouped_VHL.stack(),
-                             'VL': grouped_VL.stack(),
-                             'VH': grouped_VH.stack()})
-    
-    # Normalize reads for sequencing depth by dividing by "Per Million" (PM) scaling factor to return RPM 
-    PM_factor = merged_data.xs('bedtools_read_count', level=2).loc['VHL'].sum()/1e6
-    merged_data.loc[(slice(None), slice(None), 'bedtools_read_count')]/=PM_factor
-    merged_data.rename({'bedtools_read_count': 'bedtools_RPM'}, level=2)
-    
+    merged_data = pd.concat({'VH': grouped_VH.stack(), 
+                             'VK': grouped_VK.stack(),
+                             'VL': grouped_VL.stack()})
 
     return merged_data
 
+
+
+def clean_data(all_sc_info):    
+
+    # Create DataFrame with all merged data
+    all_sc_info = pd.DataFrame(all_sc_info).T
+    all_sc_info.index.name = 'cell_id'
+    all_sc_info.columns.names = ['locus', 'rearrangement', 'variable']
+    all_sc_info = (all_sc_info.stack(level=['locus', 'rearrangement'])
+                   .reset_index()
+                   .set_index('cell_id')
+                   )
+
+    # Set data types and round values
+    all_sc_info.SHM = all_sc_info.SHM.astype(float)
     
+    int_cols = ['bedtools_RPM', 'duplicate_count', 'gene_count']
+    all_sc_info.loc[:, int_cols] = all_sc_info.loc[:, int_cols].round(0).astype(int)
+
+    return all_sc_info
+
+
+
+def append_meta(meta_file, cleaned_sc_info):
+    """
+       Subsets data from mapped raw reads dataframe and appends to meta table
+    """
+
+    meta_df = pd.read_csv(meta_file, sep='\t', index_col='cell_id')
+    
+    # Adjust column order
+    col_order = ['rearrangement', 'locus', 'bedtools_RPM', 
+                 'gene_name', 'gene_count', 'duplicate_count', 'SHM']
+    cleaned_sc_info = cleaned_sc_info.loc[:, col_order]
+
+    appended_meta = meta_df.merge(cleaned_sc_info, left_index=True, right_index=True)
+
+    return appended_meta 
 
