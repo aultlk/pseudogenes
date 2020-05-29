@@ -12,12 +12,15 @@ from sklearn.metrics import pairwise_distances
 from itertools import product
 import numpy as np
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.ticker as tkr
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BED = f'{ROOT_DIR}/genes.sorted.bed'
 SC_DATA = f'{ROOT_DIR}/final_merged_raw_reads.csv' 
-OUTPUT = f'{ROOT_DIR}/locus_distances.csv'
-
+FIG1 = f'{ROOT_DIR}/figures/locus_distances.pdf' 
 
 def shaper(data):
 
@@ -151,8 +154,34 @@ def merge(df1, df2):
 
 merged_df = merge(sc_df, distance_df)
 
-merged_df.to_csv(OUTPUT)
 
+
+def plot1(merged_df):
+    """
+    Returns: Plot 1 = Average Interlocus Distance vs. Average SHM %
+    """
+      
+    sns.set_style("whitegrid") 
+
+    # Plot data
+    plot1 = sns.FacetGrid(data=locus_df, col='rearrangement', row='locus', hue='rearrangement')
+    plot1.map(sns.kdeplot, 'distance', 'SHM', shade_lowest=False, shade=True)
+    plot1.map(sns.scatterplot, 'distance', 'SHM', alpha=0.4, edgecolor=None, s=1, color='black')
+
+    # Format graph
+    plot1.set(xlim=(0, 1e6), ylim=(0, 20), 
+              xlabel='Average Interlocus Distance (bp)', ylabel='Average SHM (%)')     
+    plot1.set_titles(template='{col_name}: {row_name}', fontweight='bold', fontsize=18)
+    plt.subplots_adjust(hspace = 0.4, wspace = 0.3)
+
+    for ax in plot1.axes.flat:
+        ax.xaxis.set_major_formatter(
+            tkr.FuncFormatter(lambda x, p: "{:,}k".format(int(x/1000))))
+
+    
+    plt.savefig(FIG1)
+    
+    plt.show()
 
 
 

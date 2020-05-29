@@ -1,6 +1,6 @@
 """
-Loads single cell bedtools mapped IG bed files; filters dropped cells and pulls in 
-data from SONAR output file for single cells 
+   Script with functions called from Main script (main.py)
+
 """
 
 from pathlib import Path
@@ -11,189 +11,162 @@ from itertools import product
 import pandas as pd
 
 
-idx = pd.IndexSlice
 
+def load_dropped_cells(*paths):
 
-def parse_bedtools_output(path):
-    """
-    path: Path to bedtools output
-
-    Returns: Collects Immunoglobulin gene names and read counts > 0 for a 
-             given single cell. Normalizes reads for sequencing depth by dividing
-             by per million scaling factor to return reads per million (RPM). 
-    """
-    mapped_IGs = pd.read_csv(path, sep='\t', header=None, usecols=[3, 5])
-    
-    # Extract gene name and read counts
-    mapped_IGs.columns = ['gene_name', 'read_count']
-
-    # Filter out read_counts < 0
-    mapped_IGs = mapped_IGs.loc[mapped_IGs.read_count > 0]
-    
-    # Normalize reads
-    PM_factor = mapped_IGs.read_count.sum()/1e6
-    mapped_IGs.read_count/=PM_factor
-    mapped_IGs.rename({'read_count': 'RPM'}, axis=1, inplace=True)
-
-    return mapped_IGs 
-
-
-def parse_sonar_output(sonar_output_file):
-    """
-    Loads data set from SONAR BCR seq output
-    Returns gene name, productive/nonproductive, duplicate count, and SHM %
-    """
-
-    db = pd.read_csv(sonar_output_file, sep='\t', 
-                     usecols=['cell_id', 'source_id', 'v_call', 'duplicate_count', 
-                              'v_identity', 'productive', 'status'])
-
-    # remove the byte order mark in cell_id column ??
-    db.cell_id = db.cell_id.str.replace('\ufeff', '')
-
-    # only use rows that have a "good" status
-    sonar_good = db.loc[:, 'status'] == 'good'
-    db = db.loc[sonar_good]
-
-    db.v_call = db.v_call.str.split(',')
-    db = db.explode('v_call')
-    db = db.set_index('v_call')
-    db['SHM'] = 100*(1-db.v_identity)
-    
-    return db.drop('v_identity', axis=1)
-
-
-def parse_pseudogene_list(filename):
-    pseudogene_list = open(filename).read().split('\n')
-    
-    return pseudogene_list
-
-
-def parse_dropped_cells(*files):
     all_dropped_cells = set()
-    for f in files:
-        dropped_cells = {line.strip() for line in open(f)}
+    for p in paths:
+        dropped_cells = {line.strip() for line in open(p)}
         all_dropped_cells |= dropped_cells
 
     return all_dropped_cells
 
 
-def transform_all_data(cell_id, mapped_IGs, sonar_info, pseudogene_info):
-    """    
-    Returns: Data table with Productive vs. others read count, total read count
-    """
-
-    # Remove allele info
-    sonar_info['gene'] = sonar_info.index.str.replace('\*\d+', '')
-
-    # Extract cell_id only fron sonar info
-    sonar_info = sonar_info.loc[sonar_info.cell_id == cell_id]
-
-    # Subset the genes that are detected on the bed output
-    ok_genes = set(mapped_IGs['gene_name']).intersection(sonar_info['gene'])
-
-    if sonar_info.size == 0:
-        with open('../cells_not_in_sonar.csv', 'a') as handle:
-            handle.write('{}\n'.format(cell_id))
-        return 
-
-    if not ok_genes:
-        with open('../cells_in_sonar_wo_gene-hits.csv', 'a') as handle:
-            gene_names_bedtools = ','.join(mapped_IGs['gene_name'].tolist())
-            gene_names_sonar = ','.join(sonar_info['gene'].tolist())
-            handle.write('{}\t{}\t{}\n'.format(cell_id, gene_names_sonar, gene_names_bedtools))
-        return
+def process_raw_reads(path):
     
-    # Map gene data from sonar with single cell ids 
-    sonar_info = (sonar_info
-                  .set_index('gene')
-                  .reindex(index=mapped_IGs.gene_name)
-                  .fillna(value={'cell_id': cell_id, 'source_id': sonar_info.source_id.iloc[0]}))
+    mapped_IGs = pd.read_csv(path, sep='\t', header=None, usecols=[3, 5], 
+                             names=['gene', 'read_count'], index_col='gene')
 
-    # Create 'rearrangement' 
-    sonar_info['rearrangement'] = ['pseudogene' if gene in pseudogene_info
-                                   else 'functional' if sonar_info.loc[gene, 'productive']=='T'
-                                   else 'passenger' for gene in sonar_info.index]
+    # Extract V genes with read counts > 0
+    mapped_Vs = mapped_IGs[(mapped_IGs.index.str.match('^IG[HLK][V]')) & 
+                           (mapped_IGs.read_count > 0)]
 
-    # Get bedtools read counts for genes
-    sonar_info['bedtools_RPM'] = mapped_IGs.set_index('gene_name').loc[:, 'RPM']
+    # Normalize reads to RPM
+    PM_factor = mapped_Vs.read_count.sum()/1e6
+    mapped_Vs.read_count /= PM_factor
+    mapped_Vs.rename({'read_count': 'RPM'}, axis=1, inplace=True)
 
-    # Group by rearrangement, report # of assigned genes and list of gene names
-    grouped_VH = (sonar_info
-                  .loc[sonar_info.index.str.contains('IGH'), :] 
+    # Round RPMs to integers
+    mapped_Vs['RPM'] = mapped_Vs['RPM'].astype('int')
+
+    return mapped_Vs 
+
+
+def process_baldr_sonar(path):
+
+    usecols=['cell_id', 'v_call', 'v_identity', 'duplicate_count', 'productive', 'locus',
+             'cellBin.IGH', 'cellBin.IGK', 'cellBin.IGL']
+    sonar_db = pd.read_csv(path, sep='\t', usecols=usecols)
+    
+    # Explode v_call gene list
+    sonar_db.v_call = sonar_db.v_call.str.split(',')
+    sonar_db = sonar_db.explode('v_call')
+
+    # Reformat cell bin columns 
+    sonar_db.set_index(sonar_db.columns[:-3].tolist(), inplace=True)    
+    sonar_db.columns = sonar_db.columns.str.split('.', expand=True)
+    sonar_db = sonar_db.stack(level=1).reset_index()
+    sonar_db = sonar_db[sonar_db.locus == sonar_db.level_6].drop(columns='level_6')
+
+    # Convert v_identity to SHM
+    sonar_db['SHM'] = 100*(1-sonar_db.v_identity)
+    
+    # Convert v_call to gene by removing allele info
+    sonar_db['gene'] = sonar_db.v_call.str.replace('\*\d+', '')
+
+    return sonar_db.set_index('gene')
+
+
+def agg_gene_duplicates(cell_id, sc_sonar): 
+
+    sc_sonar = (sc_sonar
+                .sort_values('productive')
+                .groupby(['gene', 'cellBin', 'locus'])
+                .agg({'productive': 'last', 
+                      'duplicate_count': 'sum', 
+                      'cell_id': 'first', 
+                      'SHM': 'mean'})
+                .reset_index(level=[1, 2]))
+
+    return sc_sonar
+
+
+def load_pseudogenes(path):
+
+    pseudogenes = open(path).read().split('\n')
+    
+    return pseudogenes
+
+
+def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
+
+    # Merge mapped Vs for cell with corresponding cell sonar output
+    merged_db = mapped_Vs.join(sc_sonar).fillna(value={'cell_id': cell_id})
+
+    # Assign each gene a rearrangement type
+    merged_db['rearrangement'] = [
+        'pseudogene' if gene in pseudogenes
+        else 'productive' if merged_db.loc[gene, 'productive']=='T'
+        else 'passenger' for gene in merged_db.index
+        ]
+  
+    # Group by rearrangement, report # of genes, total RPM and gene names
+    grouped_IGH = (merged_db
+                  .loc[merged_db.index.str.contains('IGH'), :] 
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_RPM': 'sum', 
+                  .agg({'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
-                        'rearrangement': len, 
-                        'gene_name': list})
+                        'rearrangement': len}) 
                   .rename(columns={'rearrangement': 'gene_count'}))
 
-    grouped_VK = (sonar_info
-                  .loc[sonar_info.index.str.match('^IGKV'), :]
+    grouped_IGK = (merged_db
+                  .loc[merged_db.index.str.match('^IGKV'), :]
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_RPM': 'sum', 
+                  .agg({'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
-                        'rearrangement': len, 
-                        'gene_name': list})
+                        'rearrangement': len}) 
                   .rename(columns={'rearrangement': 'gene_count'}))
 
-    grouped_VL = (sonar_info
-                  .loc[sonar_info.index.str.match('^IGLV'), :]
+    grouped_IGL = (merged_db
+                  .loc[merged_db.index.str.match('^IGLV'), :]
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'bedtools_RPM': 'sum', 
+                  .agg({'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
-                        'rearrangement': len, 
-                        'gene_name': list})
+                        'rearrangement': len})
                   .rename(columns={'rearrangement': 'gene_count'}))
 
-    merged_data = pd.concat({'VH': grouped_VH.stack(), 
-                             'VK': grouped_VK.stack(),
-                             'VL': grouped_VL.stack()})
+    gene_rearrs = pd.concat({'IGH': grouped_IGH.stack(), 
+                             'IGK': grouped_IGK.stack(),
+                             'IGL': grouped_IGL.stack()})
 
-    return merged_data
+    return gene_rearrs
 
 
+def clean_data(all_gene_rearrs):    
 
-def clean_data(all_sc_info):    
-
-    # Create DataFrame with all merged data
-    all_sc_info = pd.DataFrame(all_sc_info).T
-    all_sc_info.index.name = 'cell_id'
-    all_sc_info.columns.names = ['locus', 'rearrangement', 'variable']
-    all_sc_info = (all_sc_info.stack(level=['locus', 'rearrangement'])
-                   .reset_index()
-                   .set_index('cell_id')
-                   )
-
-    # Set data types and round values
-    all_sc_info.SHM = all_sc_info.SHM.astype(float)
+    # Asthetics
+    cleaned_gene_rearrs = pd.DataFrame(all_gene_rearrs).T
+    cleaned_gene_rearrs.index.name = 'cell_id'
+    cleaned_gene_rearrs.columns.names = ['locus', 'rearrangement', 'variable']
+    cleaned_gene_rearrs.stack('locus')
     
-    int_cols = ['bedtools_RPM', 'duplicate_count', 'gene_count']
-    all_sc_info.loc[:, int_cols] = all_sc_info.loc[:, int_cols].round(0).astype(int)
-
-    return all_sc_info
+    return cleaned_gene_rearrs 
 
 
+def append_meta(path, cleaned_gene_rearrs, sonar_db):
 
-def append_meta(meta_file, cleaned_sc_info):
-    """
-       Subsets data from mapped raw reads dataframe and appends to meta table
-    """
+    meta = pd.read_csv(path, sep='\t', index_col='Cell')
+    meta.index.name = 'cell_id'
 
-    meta_df = pd.read_csv(meta_file, sep='\t', index_col='cell_id')
+    # Incorporate locus cell bins from SONAR-BALDR output
+    sonar_db = sonar_db.reset_index().set_index(['cell_id', 'locus'])
+    cleaned_gene_rearrs = (cleaned_gene_rearrs
+                           .merge(sonar_db.cellBin, left_index=True, right_index=True))
     
-    # Adjust column order
-    col_order = ['rearrangement', 'locus', 'bedtools_RPM', 
-                 'gene_name', 'gene_count', 'duplicate_count', 'SHM']
-    cleaned_sc_info = cleaned_sc_info.loc[:, col_order]
-
-    appended_meta = meta_df.merge(cleaned_sc_info, left_index=True, right_index=True)
+    # Append merged gene rearrangements data to original meta
+    appended_meta = meta.merge(cleaned_gene_rearrs, right_index=True, left_index=True)    
 
     return appended_meta 
+
+
+
+
+
+
 
