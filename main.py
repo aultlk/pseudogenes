@@ -8,6 +8,7 @@
 """
 
 from pathlib import Path
+from tqdm import tqdm
 import sys 
 
 import pandas as pd
@@ -21,7 +22,6 @@ from loader import get_gene_rearrs
 from loader import clean_data
 from loader import append_meta
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SONAR_TABLE = Path(f"{ROOT_DIR}/meta.cas.tsv")
 PSEUDOGENE_LIST = Path(f"{ROOT_DIR}/pseud.HKL")
@@ -29,8 +29,6 @@ CELLS_TO_REMOVE_LIST = Path(f"{ROOT_DIR}/cellstoremove.txt")
 IGH_IGNORE_LIST = Path(f"{ROOT_DIR}/IGHignore.txt")
 IGKL_IGNORE_LIST = Path(f"{ROOT_DIR}/IGKLignore.txt")
 META_TABLE = Path(f"{ROOT_DIR}/meta.tsv")
-
-
 
 
 def main():
@@ -42,23 +40,19 @@ def main():
     pseudogenes = load_pseudogenes(PSEUDOGENE_LIST)
     dropped_cells = load_dropped_cells(CELLS_TO_REMOVE_LIST, IGH_IGNORE_LIST, IGKL_IGNORE_LIST)
 
-    # Progress bar (use tqdm package) 
+    # Progress bar 
     bedtools_beds = list(Path(f"{ROOT_DIR}/bedtools_mappedIG").glob("**/*.bed"))
     n_cells = len(bedtools_beds)
-    for (i, sc_path) in enumerate(bedtools_beds):
-        print("{:,}/{:,}".format(i, n_cells), end='\r')
-
+    for sc_path in tqdm(bedtools_beds):        
         cell_id = sc_path.parent.name    
 
         if cell_id not in dropped_cells:
             sc_sonar = sonar_db[sonar_db.cell_id == cell_id]   
 
-            
             if sc_sonar.index.duplicated().any():
                 cells_w_gene_duplicates[cell_id] = (sc_sonar[sc_sonar.index.duplicated()]
                                                     .index.tolist())
                 sc_sonar = agg_gene_duplicates(cell_id, sc_sonar)
-
                         
             mapped_Vs = process_raw_reads(sc_path)    
             gene_rearrs = get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes)

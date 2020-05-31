@@ -33,11 +33,7 @@ def process_raw_reads(path):
 
     # Normalize reads to RPM
     PM_factor = mapped_Vs.read_count.sum()/1e6
-    mapped_Vs.read_count /= PM_factor
-    mapped_Vs.rename({'read_count': 'RPM'}, axis=1, inplace=True)
-
-    # Round RPMs to integers
-    mapped_Vs['RPM'] = mapped_Vs['RPM'].astype('int')
+    mapped_Vs['RPM'] = (mapped_Vs.loc[:, 'read_count'] / PM_factor).astype('int')
 
     return mapped_Vs 
 
@@ -105,7 +101,8 @@ def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
                   .loc[merged_db.index.str.contains('IGH'), :] 
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'RPM': 'sum', 
+                  .agg({'read_count': 'sum',
+                        'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
                         'rearrangement': len}) 
@@ -115,7 +112,8 @@ def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
                   .loc[merged_db.index.str.match('^IGKV'), :]
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'RPM': 'sum', 
+                  .agg({'read_count': 'sum',
+                        'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
                         'rearrangement': len}) 
@@ -125,7 +123,8 @@ def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
                   .loc[merged_db.index.str.match('^IGLV'), :]
                   .reset_index()
                   .groupby('rearrangement')
-                  .agg({'RPM': 'sum', 
+                  .agg({'read_count': 'sum',
+                        'RPM': 'sum', 
                         'duplicate_count': 'sum', 
                         'SHM': 'mean', 
                         'rearrangement': len})
@@ -154,13 +153,17 @@ def append_meta(path, cleaned_gene_rearrs, sonar_db):
     meta = pd.read_csv(path, sep='\t', index_col='Cell')
     meta.index.name = 'cell_id'
 
+    cleaned_gene_rearrs = cleaned_gene_rearrs.stack(level=['locus', 'rearrangement'])
+
     # Incorporate locus cell bins from SONAR-BALDR output
-    sonar_db = sonar_db.reset_index().set_index(['cell_id', 'locus'])
+    sonar_db = sonar_db.set_index(['cell_id', 'locus'])
     cleaned_gene_rearrs = (cleaned_gene_rearrs
-                           .merge(sonar_db.cellBin, left_index=True, right_index=True))
+                           .merge(sonar_db.cellBin, left_index=True, right_index=True)
+                           .rename(columns={'cellBin': 'locus_bin'}))
     
     # Append merged gene rearrangements data to original meta
     appended_meta = meta.merge(cleaned_gene_rearrs, right_index=True, left_index=True)    
+
 
     return appended_meta 
 
