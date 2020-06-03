@@ -35,6 +35,7 @@ def main():
 
     all_gene_rearrs = {}
     cells_w_gene_duplicates = {}
+    unmapped_sonar_gene_cells = {}
 
     sonar_db = process_baldr_sonar(SONAR_TABLE)
     pseudogenes = load_pseudogenes(PSEUDOGENE_LIST)
@@ -53,29 +54,33 @@ def main():
                 cells_w_gene_duplicates[cell_id] = (sc_sonar[sc_sonar.index.duplicated()]
                                                     .index.tolist())
                 sc_sonar = agg_gene_duplicates(cell_id, sc_sonar)
-                        
+
             mapped_Vs = process_raw_reads(sc_path)    
-            gene_rearrs = get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes)
+            (gene_rearrs, unmapped_sonar_genes) = get_gene_rearrs(cell_id, mapped_Vs, 
+                                                                  sc_sonar, pseudogenes)
                 
-        if gene_rearrs is not None:
-            all_gene_rearrs[cell_id] = gene_rearrs
-            
+            if gene_rearrs is not None:
+                all_gene_rearrs[cell_id] = gene_rearrs
+            if unmapped_sonar_genes is not None:
+                unmapped_sonar_gene_cells[cell_id] = unmapped_sonar_genes
+
     cleaned_gene_rearrs = clean_data(all_gene_rearrs)
-    appended_meta = append_meta(META_TABLE, cleaned_gene_rearrs, sonar_db)
+    appended_meta = append_meta(META_TABLE, cleaned_gene_rearrs)
     cells_w_gene_duplicates = pd.DataFrame.from_dict(cells_w_gene_duplicates, orient='index')
+    cells_w_unmapped_sonar_genes = pd.DataFrame.from_dict(unmapped_sonar_gene_cells, orient='index')
 
-
-    return (appended_meta, cells_w_gene_duplicates)
+    return (appended_meta, cells_w_gene_duplicates, cells_w_unmapped_sonar_genes)
 
 
 if __name__ == '__main__':
  
     # Run pipeline
-    (appended_meta, cells_w_gene_duplicates) = main()
+    (appended_meta, cells_w_gene_duplicates, cells_w_unmapped_sonar_genes) = main()
     
     # Save outputs
     appended_meta.to_csv(f'{ROOT_DIR}/appended_meta.csv')
     cells_w_gene_duplicates.to_csv(f'{ROOT_DIR}/cells_w_gene_duplicates.csv')
+    cells_w_unmapped_sonar_genes.to_csv(f'{ROOT_DIR}/cells_w_unmapped_sonar_genes.csv')
 
 
 
