@@ -24,6 +24,7 @@ LOCI = ('IGH', 'IGK', 'IGL')
 GENE_REARRS = ('productive', 'passenger', 'pseudogene')
 LOCUS_BINS = ('productive', 'passenger', 'pseudogene')
 
+
 def parse_args():
 
     parser = argparse.ArgumentParser()
@@ -41,6 +42,8 @@ def parse_args():
                         'If provided, stat annotations will be provided for boxplot')
     parser.add_argument('--sharey', action='store_true', help=
                         'If provided, sharey will be true for boxplot facetgrid')
+    parser.add_argument('--log-yscale', action='store_true', help=
+                        'If provided, y axis will be logscale')
     
 
     args = parser.parse_args()
@@ -71,9 +74,10 @@ def process_data(path):
         return has_prod and has_nonprod
 
     # Filter for cells containing both productive and nonproductive rearrangements
-    meta_mixed = meta.groupby('cell_id').filter(is_mixed)
+    # meta_mixed = meta.groupby('cell_id').filter(is_mixed)
 
     # Aggregate nonproductive and productive values into meta mixed data set
+    meta_mixed = meta.copy()
     meta_mixed.rearrangement.replace(['passenger', 'pseudogene'], 'nonproductive', inplace=True)
     meta_mixed = (meta_mixed
                   .groupby(['cell_id', 'rearrangement'])
@@ -96,9 +100,10 @@ def process_data(path):
     return (meta, meta_mixed)
 
 
-def boxplot(data, y, x='locus', row=None, stat_annot=False, sharey=True):
+def boxplot(data, y, x='locus', row=None, stat_annot=False, sharey=False, log_yscale=False):
 
-    boxplot_kw = dict(x=x, y=y, hue='locus_bin', palette='husl', fliersize=0.5)
+    flatui = ['#2ecc71', '#e74c3c', '#9b59b6']
+    boxplot_kw = dict(x=x, y=y, hue='locus_bin', palette=flatui, fliersize=0.5)
     facetgrid_kw = dict(col='rearrangement', row=args.row, height=6, aspect=1.9, 
                         sharey=args.sharey, dropna=False, margin_titles=True) 
 
@@ -106,10 +111,12 @@ def boxplot(data, y, x='locus', row=None, stat_annot=False, sharey=True):
 
     # Set up y-axis based on y parameter
     if y == 'RPM':
-        g.set(yscale='log', ylim=(10, 1e8))
-        ylabel = 'RPM (log10)'
+        ylabel = 'RPM'
     if y == 'gene_count':
         ylabel = 'Number of Genes Detected'
+    if args.log_yscale == True:
+        g.set(yscale='log', ylim=(1e0, 1e6))
+        ylabel += ' (log10)'
 
     g.map_dataframe(annotate_boxplot, stat_annot=args.stat_annot, **boxplot_kw)
     g.set_xlabels('Locus')
@@ -117,7 +124,7 @@ def boxplot(data, y, x='locus', row=None, stat_annot=False, sharey=True):
 
     # Add figure legend and adjust layout
     plt.legend(title='Cell Bins', loc='center left', bbox_to_anchor=(1.1, 0.5))
-    plt.subplots_adjust(left=0.05, right=0.85, bottom=0.1, top=0.9, wspace=0.2, hspace=0.2)
+    plt.subplots_adjust(left=0.05, right=0.85, bottom=0.1, top=0.9, wspace=0.1, hspace=0.2)
 
     return g
 
@@ -145,12 +152,14 @@ def annotate_boxplot(*args, **kwargs):
 def regplot(data, y, x):
 
     regplot_kw = dict(y=y, x=x, color='k', ci=None, 
-                      scatter_kws={'s': 10, 'alpha': 0.5, 'color': 'b', 'edgecolor': 'k'}, 
+                      scatter_kws={'s': 1},
+                      #scatter_kws={'s': 10, 'alpha': 0.5, 'color': 'b', 'edgecolor': 'k'}, 
                       line_kws={'linewidth': 2, 'color': 'k'}) 
 
     ax = sns.regplot(data=data, **regplot_kw)
 
     # Generate Pearson correlation coefficient and p value
+    data = data.dropna()
     (r2, pval) = stats.pearsonr(data[x], data[y])
     stats_vals = r'$R^2$:'+ f'{r2:.2f} p:{pval:.2f}'
 
@@ -180,7 +189,8 @@ def regplot(data, y, x):
     if not (y.endswith('gene_count') or y.endswith('SHM')):
         ax.yaxis.set_major_formatter(tkr.FuncFormatter(tick_formatter))
 
-    plt.tight_layout()
+    ax.tick_params(axis='both', which='major', labelsize=9.5)
+
 
     return ax
 

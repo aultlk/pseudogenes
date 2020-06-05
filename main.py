@@ -50,9 +50,9 @@ def main():
         if cell_id not in dropped_cells:
             sc_sonar = sonar_db[sonar_db.cell_id == cell_id]   
 
-            if sc_sonar.index.duplicated().any():
-                cells_w_gene_duplicates[cell_id] = (sc_sonar[sc_sonar.index.duplicated()]
-                                                    .index.tolist())
+            gene_dups = sc_sonar.gene.duplicated()
+            if gene_dups.any():
+                cells_w_gene_duplicates[cell_id] = (sc_sonar[gene_dups].gene.tolist())
                 sc_sonar = agg_gene_duplicates(cell_id, sc_sonar)
 
             mapped_Vs = process_raw_reads(sc_path)    
@@ -61,11 +61,12 @@ def main():
                 
             if gene_rearrs is not None:
                 all_gene_rearrs[cell_id] = gene_rearrs
-            if unmapped_sonar_genes is not None:
+            if unmapped_sonar_genes:
                 unmapped_sonar_gene_cells[cell_id] = unmapped_sonar_genes
 
     cleaned_gene_rearrs = clean_data(all_gene_rearrs)
     appended_meta = append_meta(META_TABLE, cleaned_gene_rearrs)
+
     cells_w_gene_duplicates = pd.DataFrame.from_dict(cells_w_gene_duplicates, orient='index')
     cells_w_unmapped_sonar_genes = pd.DataFrame.from_dict(unmapped_sonar_gene_cells, orient='index')
 

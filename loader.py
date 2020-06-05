@@ -5,7 +5,6 @@
 
 from pathlib import Path
 import sys
-from collections import Counter
 from itertools import product
 
 import pandas as pd
@@ -29,16 +28,12 @@ def process_raw_reads(path):
     # Extract V genes with read counts > 0
     mapped_Vs = mapped_IGs[(mapped_IGs.gene.str.match('^IG[HLK][V]')) & (mapped_IGs.read_count > 0)]
 
-    # Normalize reads to RPM
-    PM_factor = mapped_Vs.read_count.sum()/1e6
-    mapped_Vs['RPM'] = mapped_Vs.read_count.apply(lambda x: x/PM_factor).astype('int')
-
     # Designate gene locus
     mapped_Vs['locus'] = ['IGH' if gene.startswith('IGH')
                           else 'IGK' if gene.startswith('IGK')
                           else 'IGL' for gene in mapped_Vs.gene]
 
-    return mapped_Vs.set_index(['gene', 'locus']) 
+    return mapped_Vs
 
 
 def process_baldr_sonar(path):
@@ -63,7 +58,7 @@ def process_baldr_sonar(path):
     # Convert v_call to gene by removing allele info
     sonar_db['gene'] = sonar_db.v_call.str.replace('\*\d+', '')
 
-    return sonar_db.set_index(['gene', 'locus'])
+    return sonar_db
 
 
 def agg_gene_duplicates(cell_id, sc_sonar): 
@@ -71,12 +66,13 @@ def agg_gene_duplicates(cell_id, sc_sonar):
     sc_sonar = (sc_sonar
                 .sort_values('productive')
                 .groupby(['gene', 'locus', 'locus_bin'])
-                .agg({'productive': 'last', 
+                .agg({'productive': 'last',
                       'duplicate_count': 'sum', 
                       'cell_id': 'first', 
-                      'SHM': 'mean'}))
+                      'SHM': 'mean'})
+                .reset_index())
 
-    return sc_sonar.reset_index(level='locus_bin')
+    return sc_sonar
 
 
 def load_pseudogenes(path):
@@ -90,35 +86,29 @@ def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
 
     unmapped_sonar_genes = []
 
-    # Merge mapped Vs for cell with corresponding cell sonar output
-    merged_db = (mapped_Vs
-                 .merge(sc_sonar, left_index=True, right_index=True, how='outer')
-                 .fillna(value={'cell_id': cell_id})
-                 .reset_index(level='locus'))
-    
-    def fill(x):
-        frequency = x.value_counts()
-        if frequency.empty:
-            value = 'undetected'
-        elif len(frequency) == 1:
-            value = x.dropna().iloc[0]
-        return x.fillna(value)
+    # Fill in BALDR-SONAR locus bins for mapped Vs
+    locus_bins = sc_sonar.loc[:, ['locus', 'locus_bin']].drop_duplicates().set_index('locus')
+    mapped_Vs = mapped_Vs.join(locus_bins, on='locus').fillna('undetected').set_index('gene')
 
-    def troubleshoot():
-        for gene in mapped_Vs.index.get_level_values('gene'):
-            if gene not in sonar.index.get_level_values('gene'):
-                unmapped_sonar_genes.append(gene)
-     
-    # Fill in Locus Bin assigned in BALDR-SONAR output
-    merged_db.locus_bin = (merged_db
-                         .groupby('locus')
-                         .locus_bin
-                         .transform(fill))
+    # Merge mapped Vs with intersecting BALDR-SONAR assigned gene and traits
+    sonar_genes =  (sc_sonar.loc[:, ['gene', 'productive', 'duplicate_count', 'SHM']]
+                    .set_index('gene'))
+    merged_db = mapped_Vs.join(sonar_genes)
+
+    # Troubleshooting cells with BALDR-SONAR genes not detected by bedtools
+    genes = []
+    for gene in sonar_genes.index:
+        if gene not in mapped_Vs.index:
+            genes.append(gene)
+    if genes:
+        unmapped_sonar_genes.extend(genes)
+        unmapped_sonar_genes.append(len(genes))
 
     # Assign each gene a rearrangement type
-    merged_db['rearrangement'] = ['pseudogene' if gene in pseudogenes
-                                  else 'productive' if merged_db.loc[gene, 'productive']=='T'
-                                  else 'passenger' for gene in merged_db.index]
+    merged_db['rearrangement'] = [
+        'pseudogene' if gene in pseudogenes
+        else 'productive' if merged_db.loc[gene, 'productive'] == 'T'
+        else 'passenger' for gene in merged_db.index]
 
     # Group by rearrangement and collect counts
     gene_rearrs = (merged_db
@@ -126,8 +116,7 @@ def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
                    .agg({'rearrangement': len,
                          'duplicate_count': 'sum',
                          'read_count': 'sum',
-                         'SHM': 'mean',
-                         'RPM': 'sum'})
+                         'SHM': 'mean'})
                    .rename(columns={'rearrangement': 'gene_count'})
                    .stack())
 
@@ -155,6 +144,18 @@ def append_meta(path, cleaned_gene_rearrs):
     # Append merged gene rearrangements data to original meta
     appended_meta = meta.merge(cleaned_gene_rearrs, right_index=True, left_index=True)    
 
+    # Generate Per Million (PM) scaling factor from single cell mapped reads
+    pm_factors = (appended_meta
+                  .groupby('cell_id')
+                  .agg({'mapped_reads': 'sum'})
+                  .applymap(lambda x: x/1e6)
+                  .rename(columns={'mapped_reads': 'PM_factor'}))
+                  
+    # Convert read counts to RPM by dividing by single cell PM factor
+    for cell in appended_meta.index.unique():
+        pm_factor = pm_factors.loc[cell, 'PM_factor']
+        appended_meta.loc[cell, 'RPM'] = appended_meta.loc[cell, 'read_count']/pm_factor.astype(int)
+         
     return appended_meta 
 
 
