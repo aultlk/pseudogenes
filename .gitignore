@@ -2,3 +2,7 @@ __pycache__
 *~
 UGE-output
 step2_pseudocode.txt
+troubleshooting
+*.csv
+highest_np_rpm
+lowest_np_rpm

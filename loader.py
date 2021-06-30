@@ -1,6 +1,5 @@
 """
-   Script with functions called from Main script (main.py)
-
+Script with functions called from Main script (main.py)
 """
 
 from pathlib import Path
@@ -10,152 +9,133 @@ from itertools import product
 import pandas as pd
 
 
-def load_dropped_cells(*paths):
 
-    all_dropped_cells = set()
+def load_cluster_map(*paths):
+    """
+    Loads gene --> gene cluster map (Judah)
+    Args:
+    - paths: paths to IGHV, IGKV, IGLV gene --> gene cluster maps
+    Returns:
+    - concatenated data frame for all of these files 
+    """
+
+    cluster_map = []
     for p in paths:
-        dropped_cells = {line.strip() for line in open(p)}
-        all_dropped_cells |= dropped_cells
+        df = pd.read_csv(p, sep='\t', names=['allele', 'gene_cluster'], 
+                         index_col='allele', header=None)
+        cluster_map.append(df)
+    cluster_map = pd.concat(cluster_map, axis=0)
+    cluster_map.index = cluster_map.index.str.strip()
+    cluster_map.gene_cluster = cluster_map.gene_cluster.str.strip()
 
-    return all_dropped_cells
-
-
-def process_raw_reads(path):
-    
-    mapped_IGs = pd.read_csv(path, sep='\t', header=None, usecols=[3, 5], 
-                             names=['gene', 'read_count'])
-
-    # Extract V genes with read counts > 0
-    mapped_Vs = mapped_IGs[(mapped_IGs.gene.str.match('^IG[HLK][V]')) & (mapped_IGs.read_count > 0)]
-
-    # Designate gene locus
-    mapped_Vs['locus'] = ['IGH' if gene.startswith('IGH')
-                          else 'IGK' if gene.startswith('IGK')
-                          else 'IGL' for gene in mapped_Vs.gene]
-
-    return mapped_Vs
+    return cluster_map
 
 
-def process_baldr_sonar(path):
+def process_baldr_sonar(path, cluster_map):
+    """
+    Args:
+    - path: path to SONAR+BALDR output table
+    - cluster_map: gene cluster assignment (Judah)
+    Returns:
+    (sonar, baldr) separate dataframes. SONAR is indexed by (cell, gene) and BALDR by cell
+    """
 
-    sonar_db = pd.read_csv(path, sep='\t')
-    
+    baldr_sonar_data = pd.read_csv(path, sep='\t', index_col='cell_id') 
+
+    # Add duplicate gene identifier to distinguish from ambiguous calls
+    baldr_sonar_data.insert(0, 'duplicate_id', baldr_sonar_data.groupby(level=0).cumcount())
+    # Process baldr-sonar data to extrat SHM for all clustered genes
+    baldr_sonar_data['SHM'] = 100*(1-baldr_sonar_data.v_identity)
     # Explode v_call gene list
-    sonar_db.v_call = sonar_db.v_call.str.split(',')
-    sonar_db = sonar_db.explode('v_call')
+    baldr_sonar_data.v_call = baldr_sonar_data.v_call.str.split(',')
+    baldr_sonar_data = baldr_sonar_data.explode('v_call')
 
-    # Reformat cell bin columns 
-    sonar_db.set_index(sonar_db.columns[:-4].tolist(), inplace=True)
-    sonar_db.columns = sonar_db.columns.str.split('.', expand=True).rename('bin_locus', level=1)
-    sonar_db = sonar_db.stack(level='bin_locus').reset_index()
-    sonar_db = (sonar_db[sonar_db.locus == sonar_db.bin_locus]
-                .drop(columns='bin_locus')
-                .rename(columns={'cellBin': 'locus_bin'}))
+    # Map v calls to cluster gene assignments
+    baldr_sonar_data['clustered_vcall'] = cluster_map.loc[baldr_sonar_data.v_call, 'gene_cluster'].values
 
-    # Convert v_identity to SHM
-    sonar_db['SHM'] = 100*(1-sonar_db.v_identity)
+    # Drop cells with multiple rearrangement types for a single gene cluster
+    ## Drop the cells with contradicting 'productive' and 'rearrangement_type' columns
+    ## Trust the 'rearrangement_type' or the 'productive' column?? For now, assuming 'rearr_type' column
+    bad_cells = (baldr_sonar_data.reset_index()
+                 .groupby(['cell_id', 'clustered_vcall']).rearrangement_type
+                 .filter(lambda x: len(set(x)) > 1))
+    # Drop the 16 cells with duplicated clustered_vcalls and differing rearrangement type (at any locus)
+    baldr_sonar_data.drop(baldr_sonar_data.index[bad_cells.index], inplace=True)
+
+
+
+
+    # # Extract BALDR bins
+    # baldr_bins = (baldr_sonar_data[['cellBin.IGH', 'cellBin.IGK', 'cellBin.IGL']]
+    #               .reset_index()
+    #               .drop_duplicates()
+    #               .set_index('cell_id'))
+
+    # baldr_bins.columns = baldr_bins.columns.str.split('.').str[1]
+    # baldr_bins = baldr_bins.stack().reset_index()
+    # baldr_bins.columns = ['cell_id', 'locus', 'baldr_bin']
+
+    # Extract BALDR bins
+    baldr_bins = (baldr_sonar_data[['cellBin.final']]
+                  .reset_index()
+                  .drop_duplicates()
+                  .set_index('cell_id'))
+
+    baldr_bins.columns = baldr_bins.columns.str.split('.').str[1]
+    baldr_bins = baldr_bins.stack().reset_index()
+    baldr_bins.columns = ['cell_id', 'bin_type', 'baldr_bin']
+
+
+
     
-    # Convert v_call to gene by removing allele info
-    sonar_db['gene'] = sonar_db.v_call.str.replace('\*\d+', '')
-
-    return sonar_db
-
-
-def agg_gene_duplicates(cell_id, sc_sonar): 
-
-    sc_sonar = (sc_sonar
-                .sort_values('productive')
-                .groupby(['gene', 'locus', 'locus_bin'])
-                .agg({'productive': 'last',
-                      'duplicate_count': 'sum', 
-                      'cell_id': 'first', 
-                      'SHM': 'mean'})
-                .reset_index())
-
-    return sc_sonar
+    ## Extract SONAR data
+    sonar_data = baldr_sonar_data[['v_call', 'clustered_vcall', 'duplicate_id', 'locus', 'rearrangement_type', 'SHM']].reset_index()
+    # Compute aggregated SHM for each cell, locus and rearrangement_type
+    shm_values = sonar_data.groupby(['cell_id', 'locus', 'rearrangement_type']).apply(lambda x: x.SHM.drop_duplicates().mean())
+    # Map SHM values to original dataframe
+    sonar_data.SHM = shm_values[[tuple(info) for info in 
+                                 zip(sonar_data.cell_id, sonar_data.locus, sonar_data.rearrangement_type)]].values
+    # Drop duplicated entries for cell and clustered_vcall
+    sonar_data = sonar_data[~sonar_data[['cell_id', 'clustered_vcall']].duplicated()]
 
 
-def load_pseudogenes(path):
-
-    pseudogenes = open(path).read().split('\n')
-    
-    return pseudogenes
+    return (sonar_data, baldr_bins)
 
 
-def get_gene_rearrs(cell_id, mapped_Vs, sc_sonar, pseudogenes):
 
-    unmapped_sonar_genes = []
+def combine_data(path, sonar_judah_data, baldr_bins):
+    """
+    Combines all data sets
+    Args:
+       path: path to single cell meta file
+       sonar_judah_data: processed sonar data with judah gene clusters and read counts
+       baldr_bins: baldr assigned locus bins per cell
+    Returns:
+       Combined pandas dataframe
+    """
 
-    # Fill in BALDR-SONAR locus bins for mapped Vs
-    locus_bins = sc_sonar.loc[:, ['locus', 'locus_bin']].drop_duplicates().set_index('locus')
-    mapped_Vs = mapped_Vs.join(locus_bins, on='locus').fillna('undetected').set_index('gene')
-
-    # Merge mapped Vs with intersecting BALDR-SONAR assigned gene and traits
-    sonar_genes =  (sc_sonar.loc[:, ['gene', 'productive', 'duplicate_count', 'SHM']]
-                    .set_index('gene'))
-    merged_db = mapped_Vs.join(sonar_genes)
-
-    # Troubleshooting cells with BALDR-SONAR genes not detected by bedtools
-    genes = []
-    for gene in sonar_genes.index:
-        if gene not in mapped_Vs.index:
-            genes.append(gene)
-    if genes:
-        unmapped_sonar_genes.extend(genes)
-        unmapped_sonar_genes.append(len(genes))
-
-    # Assign each gene a rearrangement type
-    merged_db['rearrangement'] = [
-        'pseudogene' if gene in pseudogenes
-        else 'productive' if merged_db.loc[gene, 'productive'] == 'T'
-        else 'passenger' for gene in merged_db.index]
-
-    # Group by rearrangement and collect counts
-    gene_rearrs = (merged_db
-                   .groupby(['rearrangement', 'locus', 'locus_bin'])
-                   .agg({'rearrangement': len,
-                         'duplicate_count': 'sum',
-                         'read_count': 'sum',
-                         'SHM': 'mean'})
-                   .rename(columns={'rearrangement': 'gene_count'})
-                   .stack())
-
-    return (gene_rearrs, unmapped_sonar_genes)
-
-
-def clean_data(all_gene_rearrs):    
-
-    # Asthetics
-    cleaned_gene_rearrs = pd.DataFrame(all_gene_rearrs).T
-    cleaned_gene_rearrs.index.name = 'cell_id'
-    cleaned_gene_rearrs = (cleaned_gene_rearrs
-                           .stack(['locus', 'rearrangement', 'locus_bin'])
-                           .reset_index()
-                           .set_index('cell_id'))
-
-    return cleaned_gene_rearrs 
-
-
-def append_meta(path, cleaned_gene_rearrs):
-
-    meta = pd.read_csv(path, sep='\t', index_col='Cell')
+    cols = ['cell_name', 'phenotype', 'epitope', 'specificity', 'mapped_reads']
+    meta = pd.read_csv(path, sep='\t', index_col='cell_name', usecols=cols)
     meta.index.name = 'cell_id'
 
-    # Append merged gene rearrangements data to original meta
-    appended_meta = meta.merge(cleaned_gene_rearrs, right_index=True, left_index=True)    
+    appended_meta = (
+        sonar_judah_data.merge(baldr_bins, how='outer', on=['cell_id']) #'locus'
+        .merge(meta, on='cell_id', how='left')
+    )
 
-    # Generate Per Million (PM) scaling factor from single cell mapped reads
-    pm_factors = (appended_meta
-                  .groupby('cell_id')
-                  .agg({'mapped_reads': 'sum'})
-                  .applymap(lambda x: x/1e6)
-                  .rename(columns={'mapped_reads': 'PM_factor'}))
+    # Drop cells with no rearrangement type (undetected in baldr bins)
+    appended_meta = appended_meta[appended_meta.rearrangement_type.notnull()]
+
+    # Compute RPM
+    appended_meta['RPM'] = appended_meta['read_count']/(appended_meta['mapped_reads'] / 1e6)
+
+    # # Generate Per Million (PM) scaling factor for single cell total read count
+    # pm_factor = appended_meta.groupby('cell_id').mapped_reads.first()/1e6
+    # appended_meta['pm_factor'] = pm_factor.loc[appended_meta.index]
+
+    # # Compute RPM
+    # appended_meta['RPM'] = appended_meta['read_count']/appended_meta['pm_factor']
                   
-    # Convert read counts to RPM by dividing by single cell PM factor
-    for cell in appended_meta.index.unique():
-        pm_factor = pm_factors.loc[cell, 'PM_factor']
-        appended_meta.loc[cell, 'RPM'] = appended_meta.loc[cell, 'read_count']/pm_factor.astype(int)
-         
     return appended_meta 
 
 

@@ -9,26 +9,23 @@
 
 from pathlib import Path
 from tqdm import tqdm
-import sys 
 
+import sys 
+import argparse
 import pandas as pd
 
-from loader import load_dropped_cells 
-from loader import process_raw_reads
+from loader import load_cluster_map
 from loader import process_baldr_sonar
-from loader import agg_gene_duplicates
-from loader import load_pseudogenes
-from loader import get_gene_rearrs
-from loader import clean_data
-from loader import append_meta
+from loader import combine_data
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-SONAR_TABLE = Path(f"{ROOT_DIR}/meta.cas.tsv")
-PSEUDOGENE_LIST = Path(f"{ROOT_DIR}/pseud.HKL")
-CELLS_TO_REMOVE_LIST = Path(f"{ROOT_DIR}/cellstoremove.txt")
-IGH_IGNORE_LIST = Path(f"{ROOT_DIR}/IGHignore.txt")
-IGKL_IGNORE_LIST = Path(f"{ROOT_DIR}/IGKLignore.txt")
-META_TABLE = Path(f"{ROOT_DIR}/meta.tsv")
+SONAR_TABLE = Path(f"{ROOT_DIR}/sonarOutput_withCellBins_20200707.tsv")
+PSEUDOGENE_FILE = Path(f"{ROOT_DIR}/pseud.HKL")
+META_TABLE = Path(f"{ROOT_DIR}/cellInfo_allMaster.csv")
+CLUSTERED_READS = Path(f"{ROOT_DIR}/judah_clustered_gene_counts.tsv") 
+IGHV_ALLELES = Path(f"{ROOT_DIR}/IGHV_clusterLookup.txt") 
+IGKV_ALLELES = Path(f"{ROOT_DIR}/IGKV_clusterLookup.txt") 
+IGLV_ALLELES = Path(f"{ROOT_DIR}/IGLV_clusterLookup.txt")  
 
 
 def main():
@@ -36,53 +33,74 @@ def main():
     all_gene_rearrs = {}
     cells_w_gene_duplicates = {}
     unmapped_sonar_gene_cells = {}
+    cells_not_in_sonar = []
 
-    sonar_db = process_baldr_sonar(SONAR_TABLE)
-    pseudogenes = load_pseudogenes(PSEUDOGENE_LIST)
-    dropped_cells = load_dropped_cells(CELLS_TO_REMOVE_LIST, IGH_IGNORE_LIST, IGKL_IGNORE_LIST)
+    # Load all data sets
+    pseudogenes = {gene.strip() for gene in open(PSEUDOGENE_FILE)}
+    clustered_reads = pd.read_csv(CLUSTERED_READS, sep='\t')
+    cluster_map = load_cluster_map(IGHV_ALLELES, IGKV_ALLELES, IGLV_ALLELES) 
+    (sonar_data, baldr_bins) = process_baldr_sonar(SONAR_TABLE, cluster_map)
 
-    # Progress bar 
-    bedtools_beds = list(Path(f"{ROOT_DIR}/bedtools_mappedIG").glob("**/*.bed"))
-    n_cells = len(bedtools_beds)
-    for sc_path in tqdm(bedtools_beds):        
-        cell_id = sc_path.parent.name    
+    # Outer-join gene_cluster read counts with sonar data
+    merged_data = sonar_data.merge(clustered_reads, left_on=['cell_id', 'clustered_vcall'], 
+                                   right_on=['cell_id', 'gene_cluster'], how='outer')
+    merged_data.clustered_vcall = merged_data.clustered_vcall.fillna(merged_data.gene_cluster)
 
-        if cell_id not in dropped_cells:
-            sc_sonar = sonar_db[sonar_db.cell_id == cell_id]   
+    # Assign locus to gene cluster
+    merged_data['locus'] = ['IGH' if gene.startswith('IGH') else 'IGK' if gene.startswith('IGK') else 'IGL' 
+                            for gene in merged_data.clustered_vcall]
+    merged_data = merged_data.set_index('cell_id').drop(columns=['gene_cluster'])
+    
+    # Adding the meta information
+    cols = ['cell_name', 'phenotype', 'epitope', 'specificity', 'mapped_reads']
+    meta = pd.read_csv(META_TABLE, sep='\t', index_col='cell_name', usecols=cols)
+    meta.index.name = 'cell_id'
+    merged_data = merged_data.merge(meta, left_index=True, right_index=True, how='left')
 
-            gene_dups = sc_sonar.gene.duplicated()
-            if gene_dups.any():
-                cells_w_gene_duplicates[cell_id] = (sc_sonar[gene_dups].gene.tolist())
-                sc_sonar = agg_gene_duplicates(cell_id, sc_sonar)
+    
 
-            mapped_Vs = process_raw_reads(sc_path)    
-            (gene_rearrs, unmapped_sonar_genes) = get_gene_rearrs(cell_id, mapped_Vs, 
-                                                                  sc_sonar, pseudogenes)
-                
-            if gene_rearrs is not None:
-                all_gene_rearrs[cell_id] = gene_rearrs
-            if unmapped_sonar_genes:
-                unmapped_sonar_gene_cells[cell_id] = unmapped_sonar_genes
+    # Drop cells with a max read count < 100; make sure this doesn't include cells with productive assignments 
+    # merged_data = merged_data.groupby(level='cell_id').filter(lambda x: x.read_count.max() > 100)
 
-    cleaned_gene_rearrs = clean_data(all_gene_rearrs)
-    appended_meta = append_meta(META_TABLE, cleaned_gene_rearrs)
+    # Assign large read counts to productive for cells with no sonar/baldr productive bin
 
-    cells_w_gene_duplicates = pd.DataFrame.from_dict(cells_w_gene_duplicates, orient='index')
-    cells_w_unmapped_sonar_genes = pd.DataFrame.from_dict(unmapped_sonar_gene_cells, orient='index')
+    # Add pseudogene information to sonar data. Check w Chaim if I should only be taking the 'productive' classification from sonar
+    merged_data['rearrangement_type'] = [
+        rearr if pd.notnull(rearr) 
+        else 'pseudogene' if gene in pseudogenes 
+        else 'passenger'
+        for (gene, rearr) in zip(merged_data.clustered_vcall, merged_data.rearrangement_type)]
 
-    return (appended_meta, cells_w_gene_duplicates, cells_w_unmapped_sonar_genes)
+    # Aggregate rearrangement types, sum read counts and count # of v call genes aggregated
+    merged_data = merged_data.groupby(['cell_id', 'locus', 'rearrangement_type']).agg(dict(
+        SHM='first',
+        read_count='sum',
+        clustered_vcall=len
+    )).rename(columns=dict(clustered_vcall='n_genes')).reset_index()
 
+    # Merge data with meta cell information and baldr locus bins
+    final_data = combine_data(META_TABLE, merged_data, baldr_bins) 
+    
+
+
+    # cleaned_gene_rearrs = clean_data(all_gene_rearrs) 
+    # appended_meta = append_meta(META_TABLE, cleaned_gene_rearrs)
+
+
+    # cells_w_unmapped_sonar_genes = pd.DataFrame.from_dict(unmapped_sonar_gene_cells, orient='index')
+    # cells_not_in_sonar = pd.DataFrame(cells_not_in_sonar)
+
+    return final_data
 
 if __name__ == '__main__':
- 
+
     # Run pipeline
-    (appended_meta, cells_w_gene_duplicates, cells_w_unmapped_sonar_genes) = main()
+    (final_data) = main()
     
     # Save outputs
-    appended_meta.to_csv(f'{ROOT_DIR}/appended_meta.csv')
-    cells_w_gene_duplicates.to_csv(f'{ROOT_DIR}/cells_w_gene_duplicates.csv')
-    cells_w_unmapped_sonar_genes.to_csv(f'{ROOT_DIR}/cells_w_unmapped_sonar_genes.csv')
-
+    final_data.to_csv(f'{ROOT_DIR}/appended_meta.csv')
+    # cells_w_unmapped_sonar_genes.to_csv(f'{ROOT_DIR}/cells_w_unmapped_sonar_genes.csv')
+    # cells_not_in_sonar.to_csv(f'{ROOT_DIR}/cells_not_in_sonar.csv')
 
 
 
