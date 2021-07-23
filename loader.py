@@ -21,12 +21,12 @@ def load_cluster_map(*paths):
 
     cluster_map = []
     for p in paths:
-        df = pd.read_csv(p, sep='\t', names=['allele', 'gene_cluster'], 
-                         index_col='allele', header=None)
+        df = pd.read_csv(p, sep='\t', names=['v_call', 'clustered_vcall'], 
+                         index_col='v_call', header=None)
         cluster_map.append(df)
     cluster_map = pd.concat(cluster_map, axis=0)
     cluster_map.index = cluster_map.index.str.strip()
-    cluster_map.gene_cluster = cluster_map.gene_cluster.str.strip()
+    cluster_map.clustered_vcall = cluster_map.clustered_vcall.str.strip()
 
     return cluster_map
 
@@ -51,7 +51,7 @@ def process_baldr_sonar(path, cluster_map):
     baldr_sonar_data = baldr_sonar_data.explode('v_call')
 
     # Map v calls to cluster gene assignments
-    baldr_sonar_data['clustered_vcall'] = cluster_map.loc[baldr_sonar_data.v_call, 'gene_cluster'].values
+    baldr_sonar_data['clustered_vcall'] = cluster_map.loc[baldr_sonar_data.v_call, 'clustered_vcall'].values
 
     # Drop cells with multiple rearrangement types for a single gene cluster
     ## Drop the cells with contradicting 'productive' and 'rearrangement_type' columns
@@ -61,8 +61,6 @@ def process_baldr_sonar(path, cluster_map):
                  .filter(lambda x: len(set(x)) > 1))
     # Drop the 16 cells with duplicated clustered_vcalls and differing rearrangement type (at any locus)
     baldr_sonar_data.drop(baldr_sonar_data.index[bad_cells.index], inplace=True)
-
-
 
 
     # # Extract BALDR bins
@@ -90,8 +88,9 @@ def process_baldr_sonar(path, cluster_map):
     
     ## Extract SONAR data
     sonar_data = baldr_sonar_data[['v_call', 'clustered_vcall', 'duplicate_id', 'locus', 'rearrangement_type', 'SHM']].reset_index()
-    # Compute aggregated SHM for each cell, locus and rearrangement_type
+    # Compute aggregated SHM per cell, locus and rearrangement type
     shm_values = sonar_data.groupby(['cell_id', 'locus', 'rearrangement_type']).apply(lambda x: x.SHM.drop_duplicates().mean())
+
     # Map SHM values to original dataframe
     sonar_data.SHM = shm_values[[tuple(info) for info in 
                                  zip(sonar_data.cell_id, sonar_data.locus, sonar_data.rearrangement_type)]].values
@@ -100,45 +99,6 @@ def process_baldr_sonar(path, cluster_map):
 
 
     return (sonar_data, baldr_bins)
-
-
-
-def combine_data(path, sonar_judah_data, baldr_bins):
-    """
-    Combines all data sets
-    Args:
-       path: path to single cell meta file
-       sonar_judah_data: processed sonar data with judah gene clusters and read counts
-       baldr_bins: baldr assigned locus bins per cell
-    Returns:
-       Combined pandas dataframe
-    """
-
-    cols = ['cell_name', 'phenotype', 'epitope', 'specificity', 'mapped_reads']
-    meta = pd.read_csv(path, sep='\t', index_col='cell_name', usecols=cols)
-    meta.index.name = 'cell_id'
-
-    appended_meta = (
-        sonar_judah_data.merge(baldr_bins, how='outer', on=['cell_id']) #'locus'
-        .merge(meta, on='cell_id', how='left')
-    )
-
-    # Drop cells with no rearrangement type (undetected in baldr bins)
-    appended_meta = appended_meta[appended_meta.rearrangement_type.notnull()]
-
-    # Compute RPM
-    appended_meta['RPM'] = appended_meta['read_count']/(appended_meta['mapped_reads'] / 1e6)
-
-    # # Generate Per Million (PM) scaling factor for single cell total read count
-    # pm_factor = appended_meta.groupby('cell_id').mapped_reads.first()/1e6
-    # appended_meta['pm_factor'] = pm_factor.loc[appended_meta.index]
-
-    # # Compute RPM
-    # appended_meta['RPM'] = appended_meta['read_count']/appended_meta['pm_factor']
-                  
-    return appended_meta 
-
-
 
 
 
